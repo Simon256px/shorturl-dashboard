@@ -1,0 +1,17 @@
+# Normalise line endings in the repository to LF.
+# Without this, a clone made on Windows with core.autocrlf=false can commit
+# CRLF into the shell scripts, and they then fail on the server with
+# "bad interpreter: /usr/bin/env bash^M".
+* text=auto eol=lf
+
+# These must be LF whatever the contributor's platform.
+*.sh      text eol=lf
+*.service text eol=lf
+Caddyfile text eol=lf
+*.ts      text eol=lf
+*.json    text eol=lf
+*.yml     text eol=lf
+*.md      text eol=lf
+
+# Don't let GitHub's language stats count the lockfile as source.
+deno.lock linguist-generated=true

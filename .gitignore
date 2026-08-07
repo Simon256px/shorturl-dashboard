@@ -1,0 +1,14 @@
+# Secrets & runtime state — never commit these
+.env
+data/
+dist/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Scratch
+probe*.ts
+*.log
