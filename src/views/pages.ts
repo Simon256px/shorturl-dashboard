@@ -348,6 +348,9 @@ export function newLinkPage(
             <input type="text" id="note" name="note" maxlength="280" value="${v.note ?? ""}"
                    placeholder="Newsletter #42 — header button">
           </div>
+
+          ${socialCardFields(v)}
+
           <div class="actions">
             <button class="btn" type="submit">Create link</button>
             <a class="btn secondary" href="/dashboard/links">Cancel</a>
@@ -356,6 +359,40 @@ export function newLinkPage(
       </div>
     </div>`,
   });
+}
+
+/**
+ * The Open Graph card editor, shared by the create and edit forms so the two
+ * cannot drift apart.
+ */
+function socialCardFields(v: Record<string, string>): Html {
+  return html`
+    <fieldset class="cardfields">
+      <legend>Social card <span class="opt">optional</span></legend>
+      <p class="muted fieldhelp">
+          Fill any field and this short link shows your own preview on Discord, X,
+          Slack and the rest. Leave all three empty and the destination's own card
+          is used, exactly as before.
+        </p>
+      <div>
+        <label for="og_title">Card title</label>
+        <input type="text" id="og_title" name="og_title" maxlength="120"
+          value="${v.og_title ?? ""}" placeholder="Support my work on Ko-fi">
+      </div>
+      <div>
+        <label for="og_description">Card description</label>
+        <input type="text" id="og_description" name="og_description" maxlength="300"
+          value="${v.og_description ?? ""}"
+          placeholder="Every coffee helps me keep building open source tools.">
+      </div>
+      <div>
+        <label for="og_image">Card image URL
+            <span class="opt">https, 1200×630 recommended</span></label>
+        <input type="url" id="og_image" name="og_image" value="${v.og_image ?? ""}"
+          placeholder="https://example.com/card.png">
+      </div>
+    </fieldset>
+  `;
 }
 
 // --- Link detail --------------------------------------------------------------
@@ -452,11 +489,22 @@ export function linkDetailPage(ctx: PageCtx, d: LinkDetailData): Html {
               <input type="text" id="note" name="note" maxlength="280" value="${l.note ?? ""}">
             </div>
           </div>
+
+          ${
+      socialCardFields({
+        og_title: l.og_title ?? "",
+        og_description: l.og_description ?? "",
+        og_image: l.og_image ?? "",
+      })
+    }
+
           <div class="actions">
             <button class="btn" type="submit">Save changes</button>
           </div>
         </form>
       </div>
+
+      ${cardPreview(l, d.shortUrl)}
 
       <h2>Danger zone</h2>
       <div class="card actions">
@@ -472,6 +520,55 @@ export function linkDetailPage(ctx: PageCtx, d: LinkDetailData): Html {
       </div>
     </div>`,
   });
+}
+
+/**
+ * Approximation of how the card lands in a chat client. Deliberately labelled
+ * as an approximation — every platform crops and truncates differently, so the
+ * only authoritative check is posting the link somewhere.
+ */
+function cardPreview(l: LinkRow, shortUrl: string): Html {
+  if (!l.og_title && !l.og_description && !l.og_image) {
+    return html`
+      <h2>Social card</h2>
+      <div class="card">
+        <p class="muted">
+                No card set — sharing this link shows the destination's own preview.
+                Fill the card fields above to override it.
+              </p>
+      </div>
+    `;
+  }
+
+  return html`
+    <h2>Social card</h2>
+    <div class="card">
+      <div class="ogcard">
+            <div class="ogcard-host">${hostOfUrl(shortUrl)}</div>
+            <div class="ogcard-title">${l.og_title ?? hostOfUrl(l.target)}</div>
+            ${l.og_description ? html`<div class="ogcard-desc">${l.og_description}</div>` : ""}
+            ${l.og_image
+              ? html`
+                <img class="ogcard-img" src="${l.og_image}" alt="Card image preview"
+                  loading="lazy" width="600" height="315">
+              `
+              : ""}
+          </div>
+      <p class="muted fieldhelp">
+            Approximate. Crawlers cache aggressively, so an edit can take a few
+            minutes to appear — and a platform that already cached the old card may
+            keep showing it until its own cache expires.
+          </p>
+    </div>
+  `;
+}
+
+function hostOfUrl(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return url;
+  }
 }
 
 // --- Settings -----------------------------------------------------------------

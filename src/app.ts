@@ -7,7 +7,7 @@
 
 import { Hono } from "hono";
 import type { Config } from "./config.ts";
-import type { Store } from "./db.ts";
+import { hasOpenGraph, type Store } from "./db.ts";
 import type { DiscordReporter } from "./discord.ts";
 import {
   type Auth,
@@ -21,6 +21,8 @@ import { RateLimiter } from "./util/rate-limit.ts";
 import { sha256Hex } from "./util/crypto.ts";
 import { CSS } from "./views/assets.ts";
 import { errorPage, homePage, loginPage, type PageCtx } from "./views/pages.ts";
+import { openGraphPage } from "./views/opengraph.ts";
+import { isSocialCrawler } from "./util/user-agent.ts";
 import { buildClick, clientIp, createLink, linkState } from "./service.ts";
 import { registerDashboard } from "./routes/dashboard.ts";
 import { registerApi } from "./routes/api.ts";
@@ -49,6 +51,26 @@ export interface AppCtx {
 
 /** Requests larger than this are rejected before any parsing happens. */
 const MAX_BODY_BYTES = 64 * 1024;
+
+/**
+ * The site policy. `script-src` is absent entirely, which under
+ * `default-src 'none'` means no script can run anywhere — that is the whole
+ * reason the dashboard ships no client JavaScript.
+ *
+ * `imgSrc` is the one dial: the card editor widens it so it can preview an
+ * image hosted elsewhere. Even then nothing becomes executable — the worst a
+ * remote image can do is tell its host that the admin opened the page.
+ */
+export function contentSecurityPolicy(imgSrc = "'self' data:"): string {
+  return [
+    "default-src 'none'",
+    "style-src 'self'",
+    `img-src ${imgSrc}`,
+    "form-action 'self'",
+    "base-uri 'none'",
+    "frame-ancestors 'none'",
+  ].join("; ");
+}
 
 export function buildContext(
   store: Store,
@@ -93,19 +115,11 @@ export function createApp(ctx: AppCtx): AppHono {
     // `no-referrer` so the destination never learns the short URL.
     if (!h.has("referrer-policy")) h.set("referrer-policy", "same-origin");
     h.set("permissions-policy", "geolocation=(), microphone=(), camera=(), interest-cohort=()");
-    // No inline scripts, no external anything. The dashboard is pure server-
-    // rendered HTML + one stylesheet, so this is free to enforce.
-    h.set(
-      "content-security-policy",
-      [
-        "default-src 'none'",
-        "style-src 'self'",
-        "img-src 'self' data:",
-        "form-action 'self'",
-        "base-uri 'none'",
-        "frame-ancestors 'none'",
-      ].join("; "),
-    );
+    // Set only if the route hasn't chosen its own — the card editor needs a
+    // wider img-src to preview a remote image.
+    if (!h.has("content-security-policy")) {
+      h.set("content-security-policy", contentSecurityPolicy());
+    }
     if (config.secureCookies) {
       h.set("strict-transport-security", "max-age=31536000; includeSubDomains");
     }
@@ -234,7 +248,29 @@ export function createApp(ctx: AppCtx): AppHono {
       return c.html(errorPage(ctx.page, 404, message), 404);
     }
 
+    // Recorded either way, so a preview still shows up in the analytics —
+    // bucketed as `device: bot`, which is how you tell the two apart.
     store.recordClick(buildClick(c, config, store, link!.id));
+
+    // A preview crawler asking for a link that has its own card gets the card.
+    // Everything else — every human, every script — gets the plain redirect.
+    if (hasOpenGraph(link!) && isSocialCrawler(c.req.header("user-agent"))) {
+      return c.html(
+        openGraphPage({
+          link: link!,
+          shortUrl: `${config.baseUrl}/${encodeURIComponent(link!.slug)}`,
+          siteName: new URL(config.baseUrl).hostname,
+          themeColor: "#3b5bdb",
+        }),
+        200,
+        {
+          // Crawlers cache hard. Five minutes keeps an edit from taking hours
+          // to show up without inviting a re-fetch on every share.
+          "cache-control": "public, max-age=300",
+          "referrer-policy": "no-referrer",
+        },
+      );
+    }
 
     return c.body(null, config.redirectStatus, {
       location: link!.target,

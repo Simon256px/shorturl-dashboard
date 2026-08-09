@@ -77,6 +77,9 @@ export interface CreateInput {
   slug?: string | null;
   note?: string | null;
   expiresAt?: number | null;
+  ogTitle?: string | null;
+  ogDescription?: string | null;
+  ogImage?: string | null;
 }
 
 export function createLink(store: Store, config: Config, input: CreateInput): Result<LinkRow> {
@@ -86,7 +89,11 @@ export function createLink(store: Store, config: Config, input: CreateInput): Re
   });
   if (!check.ok) return { ok: false, status: 400, error: check.error };
 
+  const og = normaliseOpenGraph(input, config);
+  if (!og.ok) return og;
+
   const note = (input.note ?? "").trim().slice(0, 280) || null;
+  const common = { target: check.url, note, expiresAt: input.expiresAt ?? null, ...og.value };
 
   if (input.slug) {
     const slugCheck = validateSlug(input.slug);
@@ -94,15 +101,7 @@ export function createLink(store: Store, config: Config, input: CreateInput): Re
     if (store.slugExists(slugCheck.value)) {
       return { ok: false, status: 409, error: `The slug "${slugCheck.value}" is already taken.` };
     }
-    return {
-      ok: true,
-      value: store.createLink({
-        slug: slugCheck.value,
-        target: check.url,
-        note,
-        expiresAt: input.expiresAt ?? null,
-      }),
-    };
+    return { ok: true, value: store.createLink({ slug: slugCheck.value, ...common }) };
   }
 
   // Random slug: retry on collision, widening the alphabet space as we go.
@@ -110,17 +109,46 @@ export function createLink(store: Store, config: Config, input: CreateInput): Re
     const length = 7 + Math.floor(attempt / 3); // 7, 7, 7, 8, 8, 8, 9, 9
     const slug = generateSlug(length);
     if (RESERVED_SLUGS.has(slug.toLowerCase()) || store.slugExists(slug)) continue;
-    return {
-      ok: true,
-      value: store.createLink({
-        slug,
-        target: check.url,
-        note,
-        expiresAt: input.expiresAt ?? null,
-      }),
-    };
+    return { ok: true, value: store.createLink({ slug, ...common }) };
   }
   return { ok: false, status: 503, error: "Could not allocate a free slug. Try again." };
+}
+
+// --- Open Graph ---------------------------------------------------------------
+
+/** Platforms truncate well before these; the caps just bound what we store. */
+export const OG_TITLE_MAX = 120;
+export const OG_DESCRIPTION_MAX = 300;
+
+export interface OpenGraphFields {
+  ogTitle: string | null;
+  ogDescription: string | null;
+  ogImage: string | null;
+}
+
+/**
+ * Trims the card fields and validates the image URL.
+ *
+ * The image is fetched by the crawler, not by us, so this is not an SSRF
+ * boundary — but the same scheme allowlist applies, because a `javascript:`
+ * value emitted into a meta tag is something we should never produce.
+ */
+export function normaliseOpenGraph(
+  input: { ogTitle?: string | null; ogDescription?: string | null; ogImage?: string | null },
+  config: Config,
+): Result<OpenGraphFields> {
+  const title = (input.ogTitle ?? "").trim().slice(0, OG_TITLE_MAX) || null;
+  const description = (input.ogDescription ?? "").trim().slice(0, OG_DESCRIPTION_MAX) || null;
+
+  const rawImage = (input.ogImage ?? "").trim();
+  let image: string | null = null;
+  if (rawImage !== "") {
+    const check = validateTarget(rawImage, { allowPrivate: config.allowPrivateTargets });
+    if (!check.ok) return { ok: false, status: 400, error: `Card image: ${check.error}` };
+    image = check.url;
+  }
+
+  return { ok: true, value: { ogTitle: title, ogDescription: description, ogImage: image } };
 }
 
 export type LinkState = "ok" | "missing" | "disabled" | "expired";

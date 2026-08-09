@@ -44,6 +44,63 @@ const BOT_PATTERNS = [
   "lighthouse",
 ];
 
+/**
+ * Agents that fetch a URL purely to build a link preview.
+ *
+ * Deliberately a named list rather than the broader `device === "bot"` bucket:
+ * serving an HTML wrapper instead of a redirect changes what the caller gets,
+ * so it should happen only for callers we can name. A `curl` script or an
+ * uptime monitor keeps getting the plain 302 it asked for.
+ *
+ * The cost of the allowlist is that a brand-new platform shows the
+ * destination's card until its agent is added here — a missing card, never a
+ * broken link.
+ */
+const SOCIAL_CRAWLER_PATTERNS = [
+  "discordbot",
+  "twitterbot",
+  "facebookexternalhit",
+  "facebookcatalog",
+  "slackbot",
+  "slack-imgproxy",
+  "linkedinbot",
+  "telegrambot",
+  "whatsapp",
+  "skypeuripreview",
+  "redditbot",
+  "pinterest",
+  "tumblr",
+  "mastodon",
+  "akkoma",
+  "pleroma",
+  "misskey",
+  "bluesky",
+  "embedly",
+  "iframely",
+  "quora link preview",
+  "nuzzel",
+  "vkshare",
+  "flipboard",
+  "outbrain",
+  "applebot", // powers iMessage rich links
+  "signal-desktop",
+  "snapchat",
+  "viber",
+  "line-podcast",
+  "developers.google.com/+/web/snippet", // Google+ era, still sent by some tools
+  "google-inspectiontool",
+];
+
+/**
+ * True when the request is a link-preview crawler, i.e. something that will
+ * read Open Graph tags rather than navigate a human.
+ */
+export function isSocialCrawler(raw: string | undefined | null): boolean {
+  if (!raw) return false;
+  const lower = raw.slice(0, 512).toLowerCase();
+  return SOCIAL_CRAWLER_PATTERNS.some((p) => lower.includes(p));
+}
+
 // Ordered: the first match wins, so impersonators must come before the
 // browser they impersonate.
 const BROWSERS: Array<[RegExp, string]> = [

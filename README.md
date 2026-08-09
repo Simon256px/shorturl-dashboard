@@ -24,6 +24,8 @@ client-side JavaScript, no Redis, no Postgres.
 - **Analytics** — clicks, unique visitors, referrers, countries, browsers, OS, device type, daily
   and hourly time series
 - **Dashboard** — server-rendered, dark/light, works without JavaScript
+- **Social cards** — per-link Open Graph title, description and image, so a short link shows _your_
+  preview on Discord, X, Slack and the rest
 - **Discord** — a single embed message edited in place, never spammed
 - **QR codes** — SVG, generated server-side, scale to print
 - **Expiry & disable** — per-link, enforced on redirect
@@ -101,6 +103,35 @@ because trusting it unconditionally would let a visitor spoof their address and 
 rate limiting and unique-visitor counting. Set it to `true` when, and only when, a proxy in front of
 the app overwrites that header.
 
+## Social cards
+
+Fill **Card title**, **Card description** and **Card image URL** on a link, and sharing that short
+link shows your own preview instead of the destination's.
+
+How it works: a `302` carries no body, so a preview crawler following a short link reads the
+_destination's_ Open Graph tags. To show a card of our own the crawler has to receive HTML — so when
+a link has card data **and** the caller matches the named crawler list in
+[`src/util/user-agent.ts`](src/util/user-agent.ts), it gets an HTML wrapper instead of a redirect.
+Everyone else — every human, every script, every uptime monitor — keeps getting the plain `302`.
+
+Three properties worth stating plainly, because "serve crawlers something different" deserves
+scrutiny:
+
+- The wrapper points at the **same destination** as the redirect, via a meta refresh and a real
+  anchor. Sending crawlers elsewhere would be cloaking and would get the domain flagged; this
+  doesn't.
+- It ships `noindex, nofollow`, so it never competes with the destination in search results.
+- Leave all three fields empty and nothing changes: the link redirects exactly as it did before.
+  Existing links are untouched by the upgrade.
+
+Practical notes: use **https** for the image (many platforms silently drop `http` ones) and aim for
+**1200×630**. Crawlers cache hard — an edit can take minutes to appear, and a platform that already
+cached the old card may keep showing it until its own cache expires. Posting the link in a fresh
+Discord channel is the quickest way to see the current version.
+
+The trade-off of the named-crawler list: a brand-new platform shows the destination's card until its
+agent is added. That is a missing card, never a broken link.
+
 ## Discord
 
 Create a webhook in **Server Settings → Integrations → Webhooks**, copy the URL into
@@ -127,6 +158,15 @@ Create a key under **Settings** in the dashboard. It is shown once.
 ```bash
 curl -X POST https://s.example.com/api/links -H "Authorization: Bearer sud_..." -H "Content-Type: application/json" -d '{"target":"https://example.com/page","slug":"launch","note":"newsletter"}'
 ```
+
+Card fields go in the same body — `og_title`, `og_description`, `og_image`:
+
+```bash
+curl -X POST https://s.example.com/api/links -H "Authorization: Bearer sud_..." -H "Content-Type: application/json" -d '{"target":"https://ko-fi.com/you","slug":"kofi","og_title":"Support my work","og_description":"Every coffee helps.","og_image":"https://example.com/card.png"}'
+```
+
+On `PATCH`, an absent card key is left alone and an explicit `null` clears it — so updating the
+target never disturbs the card, and `{"og_image":null}` drops just the image.
 
 | Method   | Path                          | Purpose                                       |
 | -------- | ----------------------------- | --------------------------------------------- |
@@ -192,7 +232,14 @@ What the app does, and why:
 - **Slugs** — rejection-sampled from a CSPRNG over a 58-character alphabet, so they are neither
   guessable nor enumerable.
 - **Rate limits** — login 8/15 min, link creation 60/h, API 240/min, redirects 600/min, all per IP.
-- **CSP** — `default-src 'none'; script-src` absent entirely; no inline styles.
+- **CSP** — `default-src 'none'; script-src` absent entirely; no inline styles. The one exception is
+  the link detail page when a card image is set: `img-src` widens to `https:` so the image can be
+  previewed. `script-src` stays absent, so the image still cannot execute anything — the residual
+  cost is that the image host learns the admin opened that page.
+- **Social cards** — the title and description are user-controlled text emitted into `content="…"`
+  attributes, so they are HTML-escaped; a test asserts a `"><script>` payload cannot break out. The
+  image URL goes through the same scheme allowlist as a destination, which rules out `javascript:`
+  and `data:` in a meta tag.
 - **Headers** — `nosniff`, `X-Frame-Options: DENY`, HSTS on https, and
   `Referrer-Policy: no-referrer` on the redirect so the destination never learns which short link
   (or campaign) sent the visitor.

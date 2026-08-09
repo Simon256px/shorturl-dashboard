@@ -7,9 +7,9 @@
  */
 
 import type { Context } from "hono";
-import type { AppCtx, AppHono } from "../app.ts";
+import { type AppCtx, type AppHono, contentSecurityPolicy } from "../app.ts";
 import { csrfOk, currentSession, issueApiKey } from "../auth.ts";
-import { createLink, parseExpiry, toCsv, validateSlug } from "../service.ts";
+import { createLink, normaliseOpenGraph, parseExpiry, toCsv, validateSlug } from "../service.ts";
 import { validateTarget } from "../util/target-url.ts";
 import { qrSvg } from "../util/qr.ts";
 import {
@@ -116,6 +116,9 @@ export function registerDashboard(app: AppHono, ctx: AppCtx): void {
       slug: String(body.slug ?? ""),
       note: String(body.note ?? ""),
       expires: String(body.expires ?? ""),
+      og_title: String(body.og_title ?? ""),
+      og_description: String(body.og_description ?? ""),
+      og_image: String(body.og_image ?? ""),
     };
 
     const expiry = parseExpiry(values.expires);
@@ -126,6 +129,9 @@ export function registerDashboard(app: AppHono, ctx: AppCtx): void {
       slug: values.slug || null,
       note: values.note,
       expiresAt: expiry.value,
+      ogTitle: values.og_title,
+      ogDescription: values.og_description,
+      ogImage: values.og_image,
     });
     if (!result.ok) {
       return c.html(
@@ -144,6 +150,14 @@ export function registerDashboard(app: AppHono, ctx: AppCtx): void {
   app.get("/dashboard/links/:slug", (c) => {
     const link = store.getLinkBySlug(c.req.param("slug"));
     if (!link) return c.html(errorPage(ctx.page, 404, "No such link."), 404);
+
+    // This page previews the card image, which lives on someone else's host.
+    // Widening img-src to https: is the whole concession — script-src stays
+    // absent, so the image still cannot execute anything. The residual cost is
+    // that the image host learns the admin opened this page.
+    if (link.og_image) {
+      c.header("content-security-policy", contentSecurityPolicy("'self' data: https:"));
+    }
 
     return c.html(
       linkDetailPage(ctx.page, {
@@ -187,10 +201,20 @@ export function registerDashboard(app: AppHono, ctx: AppCtx): void {
     const expiry = parseExpiry(String(body.expires ?? ""));
     if (!expiry.ok) return back(expiry.error, "error");
 
+    // Same normalisation as on create. Submitting the fields empty really
+    // clears them — that is how you take a card back off a link.
+    const og = normaliseOpenGraph({
+      ogTitle: String(body.og_title ?? ""),
+      ogDescription: String(body.og_description ?? ""),
+      ogImage: String(body.og_image ?? ""),
+    }, config);
+    if (!og.ok) return back(og.error, "error");
+
     store.updateLink(link.id, {
       target: check.url,
       note: String(body.note ?? "").trim().slice(0, 280) || null,
       expiresAt: expiry.value,
+      ...og.value,
     });
     return back("Changes saved", "ok");
   });

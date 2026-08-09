@@ -161,6 +161,33 @@ input:focus, select:focus, textarea:focus {
 .chart { width: 100%; height: auto; display: block; }
 .qr { max-width: 200px; width: 100%; height: auto; border-radius: 8px; }
 
+/* --- social card editor --------------------------------------------------- */
+fieldset.cardfields {
+  display: grid; gap: 14px;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 4px 16px 16px; margin: 4px 0 0;
+}
+fieldset.cardfields legend {
+  font-size: 13px; font-weight: 700; padding: 0 7px;
+  text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted);
+}
+.fieldhelp { font-size: 13px; margin: 4px 0 0; }
+
+/* Rough stand-in for a chat client's embed: accent bar, stacked text, image
+   below. Not pixel-accurate to any one platform, on purpose. */
+.ogcard {
+  border-left: 4px solid var(--accent);
+  background: var(--surface-2);
+  border-radius: 6px; padding: 12px 14px; max-width: 460px;
+}
+.ogcard-host  { font-size: 12px; color: var(--muted); margin-bottom: 3px; }
+.ogcard-title { font-weight: 600; color: var(--accent); line-height: 1.3; }
+.ogcard-desc  { font-size: 14px; margin-top: 5px; white-space: pre-wrap; }
+.ogcard-img {
+  display: block; margin-top: 10px; width: 100%; height: auto;
+  border-radius: 5px; background: var(--border);
+}
+
 .copybox {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   background: var(--accent-soft); border: 1px solid var(--border);

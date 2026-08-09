@@ -10,8 +10,15 @@
 import type { Context } from "hono";
 import type { AppCtx, AppEnv, AppHono } from "../app.ts";
 import { authenticate, csrfOk } from "../auth.ts";
-import type { LinkRow } from "../db.ts";
-import { clientIp, createLink, linkState, parseExpiry, toCsv } from "../service.ts";
+import { hasOpenGraph, type LinkRow } from "../db.ts";
+import {
+  clientIp,
+  createLink,
+  linkState,
+  normaliseOpenGraph,
+  parseExpiry,
+  toCsv,
+} from "../service.ts";
 import { validateTarget } from "../util/target-url.ts";
 
 const WEEK = 7 * 86400;
@@ -70,6 +77,9 @@ export function registerApi(app: AppHono, ctx: AppCtx): void {
       slug: typeof body.slug === "string" ? body.slug : null,
       note: typeof body.note === "string" ? body.note : null,
       expiresAt: expiry.value,
+      ogTitle: typeof body.og_title === "string" ? body.og_title : null,
+      ogDescription: typeof body.og_description === "string" ? body.og_description : null,
+      ogImage: typeof body.og_image === "string" ? body.og_image : null,
     });
     if (!result.ok) return c.json({ error: result.error }, result.status as 400);
 
@@ -120,6 +130,23 @@ export function registerApi(app: AppHono, ctx: AppCtx): void {
       patch.note = body.note === null ? null : String(body.note).trim().slice(0, 280) || null;
     }
     if (body.disabled !== undefined) patch.disabled = Boolean(body.disabled);
+
+    // Card fields are individually patchable, and `null` clears one. Absent
+    // keys are left alone, so updating only the target keeps the card intact.
+    if (
+      body.og_title !== undefined || body.og_description !== undefined ||
+      body.og_image !== undefined
+    ) {
+      const og = normaliseOpenGraph({
+        ogTitle: body.og_title === undefined ? link.og_title : asNullableString(body.og_title),
+        ogDescription: body.og_description === undefined
+          ? link.og_description
+          : asNullableString(body.og_description),
+        ogImage: body.og_image === undefined ? link.og_image : asNullableString(body.og_image),
+      }, config);
+      if (!og.ok) return c.json({ error: og.error }, 400);
+      Object.assign(patch, og.value);
+    }
     if (body.expires !== undefined || body.expires_at !== undefined) {
       if (body.expires_at === null || body.expires === null) {
         patch.expiresAt = null;
@@ -215,7 +242,20 @@ function serialize(link: LinkRow, baseUrl: string) {
     created_at: link.created_at,
     expires_at: link.expires_at,
     last_click_at: link.last_click_at,
+    card: {
+      // `active: false` means preview crawlers get the plain redirect and the
+      // destination's own card shows.
+      active: hasOpenGraph(link),
+      title: link.og_title,
+      description: link.og_description,
+      image: link.og_image,
+    },
   };
+}
+
+/** `null` clears a field; anything else is coerced to a trimmed string. */
+function asNullableString(v: unknown): string | null {
+  return v === null ? null : String(v);
 }
 
 function clampInt(raw: string | undefined, fallback: number, min: number, max: number): number {

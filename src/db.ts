@@ -24,6 +24,15 @@ export interface LinkRow {
   disabled: number;
   click_count: number;
   last_click_at: number | null;
+  /** Open Graph overrides. All null means "let the destination's card show". */
+  og_title: string | null;
+  og_description: string | null;
+  og_image: string | null;
+}
+
+/** True when a link carries enough Open Graph data to be worth rendering. */
+export function hasOpenGraph(link: LinkRow): boolean {
+  return Boolean(link.og_title || link.og_description || link.og_image);
 }
 
 export interface ClickInsert {
@@ -43,7 +52,9 @@ export interface Bucket {
   value: number;
 }
 
-const SCHEMA_VERSION = 1;
+/** Bump alongside a new entry in MIGRATIONS. Exported so tests can assert a
+ * fresh database lands on the latest version without hard-coding a number. */
+export const SCHEMA_VERSION = 2;
 
 const MIGRATIONS: string[] = [
   // v1 — initial schema
@@ -104,6 +115,14 @@ const MIGRATIONS: string[] = [
     value      TEXT NOT NULL,
     updated_at INTEGER NOT NULL
   );
+  `,
+
+  // v2 — per-link Open Graph card. Nullable throughout: a link with no values
+  // keeps the plain 302 behaviour, so upgrading changes nothing on its own.
+  `
+  ALTER TABLE links ADD COLUMN og_title       TEXT;
+  ALTER TABLE links ADD COLUMN og_description TEXT;
+  ALTER TABLE links ADD COLUMN og_image       TEXT;
   `,
 ];
 
@@ -179,17 +198,39 @@ export class Store {
     target: string;
     note: string | null;
     expiresAt: number | null;
+    ogTitle?: string | null;
+    ogDescription?: string | null;
+    ogImage?: string | null;
   }): LinkRow {
     const now = Math.floor(Date.now() / 1000);
     this.#s(
-      "INSERT INTO links (slug, target, note, created_at, expires_at) VALUES (?, ?, ?, ?, ?)",
-    ).run(input.slug, input.target, input.note, now, input.expiresAt);
+      `INSERT INTO links (slug, target, note, created_at, expires_at,
+                          og_title, og_description, og_image)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      input.slug,
+      input.target,
+      input.note,
+      now,
+      input.expiresAt,
+      input.ogTitle ?? null,
+      input.ogDescription ?? null,
+      input.ogImage ?? null,
+    );
     return this.getLinkBySlug(input.slug)!;
   }
 
   updateLink(
     id: number,
-    patch: { target?: string; note?: string | null; expiresAt?: number | null; disabled?: boolean },
+    patch: {
+      target?: string;
+      note?: string | null;
+      expiresAt?: number | null;
+      disabled?: boolean;
+      ogTitle?: string | null;
+      ogDescription?: string | null;
+      ogImage?: string | null;
+    },
   ): void {
     const sets: string[] = [];
     const args: Array<string | number | null> = [];
@@ -200,6 +241,18 @@ export class Store {
     if (patch.note !== undefined) {
       sets.push("note = ?");
       args.push(patch.note);
+    }
+    if (patch.ogTitle !== undefined) {
+      sets.push("og_title = ?");
+      args.push(patch.ogTitle);
+    }
+    if (patch.ogDescription !== undefined) {
+      sets.push("og_description = ?");
+      args.push(patch.ogDescription);
+    }
+    if (patch.ogImage !== undefined) {
+      sets.push("og_image = ?");
+      args.push(patch.ogImage);
     }
     if (patch.expiresAt !== undefined) {
       sets.push("expires_at = ?");

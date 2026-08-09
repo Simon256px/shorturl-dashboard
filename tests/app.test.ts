@@ -611,3 +611,171 @@ Deno.test("Discord embed stays within the documented field limits", async () => 
     store.close();
   }
 });
+
+// --- Open Graph cards over HTTP -----------------------------------------------
+
+const DISCORDBOT = "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)";
+const HUMAN = "Mozilla/5.0 (X11; Fedora; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0";
+
+Deno.test("a crawler gets the card, a human gets the redirect", async () => {
+  const { call, store, config } = harness();
+  try {
+    store.createLink({
+      slug: "carded",
+      target: "https://ko-fi.com/simon256px",
+      note: null,
+      expiresAt: null,
+      ogTitle: "Support my work",
+      ogDescription: "Every coffee helps.",
+      ogImage: "https://cdn.example.com/card.png",
+    });
+
+    const crawler = await call("/carded", { headers: { "user-agent": DISCORDBOT } });
+    assertEquals(crawler.status, 200);
+    assertStringIncludes(crawler.headers.get("content-type") ?? "", "text/html");
+    const body = await crawler.text();
+    assertStringIncludes(body, '<meta property="og:title" content="Support my work">');
+    assertStringIncludes(
+      body,
+      '<meta property="og:image" content="https://cdn.example.com/card.png">',
+    );
+    // The wrapper must still name the real destination.
+    assertStringIncludes(body, "https://ko-fi.com/simon256px");
+
+    const human = await call("/carded", { headers: { "user-agent": HUMAN } });
+    assertEquals(human.status, config.redirectStatus);
+    assertEquals(human.headers.get("location"), "https://ko-fi.com/simon256px");
+    await human.body?.cancel();
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("a link with no card keeps the plain redirect, even for a crawler", async () => {
+  const { call, store, config } = harness();
+  try {
+    store.createLink({
+      slug: "nocard",
+      target: "https://example.com/plain",
+      note: null,
+      expiresAt: null,
+    });
+
+    const crawler = await call("/nocard", { headers: { "user-agent": DISCORDBOT } });
+    assertEquals(crawler.status, config.redirectStatus, "card-less link stopped redirecting");
+    assertEquals(crawler.headers.get("location"), "https://example.com/plain");
+    await crawler.body?.cancel();
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("a preview of a disabled or expired link still 404s", async () => {
+  const { call, store } = harness();
+  try {
+    const off = store.createLink({
+      slug: "offcrd",
+      target: "https://example.com",
+      note: null,
+      expiresAt: null,
+      ogTitle: "Should not leak",
+    });
+    store.updateLink(off.id, { disabled: true });
+
+    const res = await call("/offcrd", { headers: { "user-agent": DISCORDBOT } });
+    assertEquals(res.status, 404);
+    // A disabled link must not keep advertising its card.
+    assertFalse((await res.text()).includes("Should not leak"));
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("previews are counted as bot clicks, not human ones", async () => {
+  const { call, store } = harness();
+  try {
+    store.createLink({
+      slug: "botcnt",
+      target: "https://example.com",
+      note: null,
+      expiresAt: null,
+      ogTitle: "Card",
+    });
+
+    const res = await call("/botcnt", { headers: { "user-agent": DISCORDBOT } });
+    await res.body?.cancel();
+    store.flushClicks();
+
+    assertEquals(store.globalTotals().clicks, 1);
+    assertEquals(store.topDimension("device")[0], { label: "bot", value: 1 });
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("the dashboard rejects a dangerous card image", async () => {
+  const { call, store } = harness();
+  try {
+    const cookie = await signIn(call);
+    const res = await call("/dashboard/links", {
+      method: "POST",
+      headers: { cookie, origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        target: "https://example.com",
+        og_title: "Nice",
+        og_image: "javascript:alert(1)",
+      }),
+    });
+    assertEquals(res.status, 400);
+    assertStringIncludes(await res.text(), "Card image");
+    assertEquals(store.globalTotals().links, 0);
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("the API creates and patches a card, and null clears a field", async () => {
+  const { call, store } = harness();
+  try {
+    const { issueApiKey } = await import("../src/auth.ts");
+    const key = issueApiKey(store, "cards");
+    const headers = { authorization: `Bearer ${key}`, "content-type": "application/json" };
+
+    const created = await call("/api/links", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        target: "https://ko-fi.com/simon256px",
+        slug: "apicard",
+        og_title: "Buy me a coffee",
+        og_image: "https://cdn.example.com/a.png",
+      }),
+    });
+    assertEquals(created.status, 201);
+    const made = await created.json();
+    assertEquals(made.card.active, true);
+    assertEquals(made.card.title, "Buy me a coffee");
+
+    // Patching only the title must leave the image alone.
+    const patched = await call("/api/links/apicard", {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ og_title: "Support me" }),
+    });
+    const after = await patched.json();
+    assertEquals(after.card.title, "Support me");
+    assertEquals(after.card.image, "https://cdn.example.com/a.png");
+
+    // null clears.
+    const cleared = await call("/api/links/apicard", {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ og_title: null, og_image: null }),
+    });
+    const gone = await cleared.json();
+    assertEquals(gone.card.active, false);
+    assertEquals(gone.card.image, null);
+  } finally {
+    store.close();
+  }
+});

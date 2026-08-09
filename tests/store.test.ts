@@ -1,5 +1,5 @@
 import { assert, assertEquals, assertFalse } from "@std/assert";
-import { Store } from "../src/db.ts";
+import { SCHEMA_VERSION, Store } from "../src/db.ts";
 
 /** Each test gets its own in-memory database. */
 function freshStore(): Store {
@@ -28,8 +28,9 @@ function seedClick(
 Deno.test("migrations create a usable schema and are idempotent per instance", () => {
   const store = freshStore();
   try {
+    // A fresh database must run every migration, not stop partway.
     const version = store.raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    assertEquals(Number(version.user_version), 1);
+    assertEquals(Number(version.user_version), SCHEMA_VERSION);
     assertEquals(store.globalTotals().links, 0);
   } finally {
     store.close();
