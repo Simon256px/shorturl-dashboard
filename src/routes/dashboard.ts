@@ -9,7 +9,15 @@
 import type { Context } from "hono";
 import { type AppCtx, type AppHono, contentSecurityPolicy } from "../app.ts";
 import { csrfOk, currentSession, issueApiKey } from "../auth.ts";
-import { createLink, normaliseOpenGraph, parseExpiry, toCsv, validateSlug } from "../service.ts";
+import {
+  createLink,
+  normaliseChannel,
+  normaliseOpenGraph,
+  parseExpiry,
+  toCsv,
+  validateSlug,
+} from "../service.ts";
+import { foldReferrers, isChannelId } from "../util/channel.ts";
 import { validateTarget } from "../util/target-url.ts";
 import { qrSvg } from "../util/qr.ts";
 import {
@@ -64,6 +72,13 @@ export function registerDashboard(app: AppHono, ctx: AppCtx): void {
         countries: store.topDimension("country", { limit: 8, sinceSeconds: WEEK }),
         browsers: store.topDimension("browser", { limit: 8, sinceSeconds: WEEK }),
         devices: store.topDimension("device", { limit: 8, sinceSeconds: WEEK }),
+        channels: store.channelStats(WEEK),
+        // A high limit here, unlike the display lists above: this feeds an
+        // aggregation, and truncating it would drop hosts out of their channel's
+        // total rather than merely hiding a row.
+        detected: foldReferrers(
+          store.topDimension("referrer_host", { limit: 500, sinceSeconds: WEEK }),
+        ),
         discord: {
           enabled: ctx.discord.enabled,
           published: store.kvGet("discord_message_id") !== undefined,
@@ -81,7 +96,12 @@ export function registerDashboard(app: AppHono, ctx: AppCtx): void {
     const sort = ["newest", "clicks", "oldest"].includes(sortRaw) ? sortRaw : "newest";
     const page = Math.max(1, Math.min(10_000, Number(c.req.query("page") ?? 1) || 1));
 
-    const total = store.countLinks(search || undefined);
+    // An unrecognised value falls back to "all" rather than erroring: this is a
+    // URL people edit and share, and a 400 on a stale bookmark is unhelpful.
+    const channelRaw = (c.req.query("channel") ?? "").trim().toLowerCase();
+    const channel = channelRaw === "none" || isChannelId(channelRaw) ? channelRaw : "";
+
+    const total = store.countLinks(search || undefined, channel || undefined);
     const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
     return c.html(
@@ -91,12 +111,14 @@ export function registerDashboard(app: AppHono, ctx: AppCtx): void {
           offset: (page - 1) * PAGE_SIZE,
           search: search || undefined,
           sort,
+          channel: channel || undefined,
         }),
         total,
         page,
         pages,
         search,
         sort,
+        channel,
         notice: c.req.query("ok") ?? undefined,
         error: c.req.query("error") ?? undefined,
       }),
@@ -119,6 +141,7 @@ export function registerDashboard(app: AppHono, ctx: AppCtx): void {
       og_title: String(body.og_title ?? ""),
       og_description: String(body.og_description ?? ""),
       og_image: String(body.og_image ?? ""),
+      channel: String(body.channel ?? ""),
     };
 
     const expiry = parseExpiry(values.expires);
@@ -132,6 +155,7 @@ export function registerDashboard(app: AppHono, ctx: AppCtx): void {
       ogTitle: values.og_title,
       ogDescription: values.og_description,
       ogImage: values.og_image,
+      channel: values.channel,
     });
     if (!result.ok) {
       return c.html(
@@ -172,6 +196,9 @@ export function registerDashboard(app: AppHono, ctx: AppCtx): void {
         countries: store.topDimension("country", { limit: 8, linkId: link.id }),
         browsers: store.topDimension("browser", { limit: 8, linkId: link.id }),
         devices: store.topDimension("device", { limit: 8, linkId: link.id }),
+        detected: foldReferrers(
+          store.topDimension("referrer_host", { limit: 500, linkId: link.id }),
+        ),
         notice: c.req.query("ok") ?? undefined,
         error: c.req.query("error") ?? undefined,
       }),
@@ -210,10 +237,14 @@ export function registerDashboard(app: AppHono, ctx: AppCtx): void {
     }, config);
     if (!og.ok) return back(og.error, "error");
 
+    const channel = normaliseChannel(String(body.channel ?? ""));
+    if (!channel.ok) return back(channel.error, "error");
+
     store.updateLink(link.id, {
       target: check.url,
       note: String(body.note ?? "").trim().slice(0, 280) || null,
       expiresAt: expiry.value,
+      channel: channel.value,
       ...og.value,
     });
     return back("Changes saved", "ok");

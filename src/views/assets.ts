@@ -155,6 +155,14 @@ input:focus, select:focus, textarea:focus {
 .pill.on  { background: color-mix(in srgb, var(--good) 16%, transparent); color: var(--good); }
 .pill.off { background: color-mix(in srgb, var(--bad) 16%, transparent); color: var(--bad); }
 .pill.exp { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
+/* Channel pill doubles as a filter link, so it needs the anchor reset. */
+.pill.ch { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent);
+           text-decoration: none; white-space: nowrap; }
+
+.chanhelp { max-width: 80ch; }
+.chanverdict { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline;
+               margin: 0 0 12px; font-size: 14px; }
+.chanverdict .flag { color: var(--warn); font-weight: 600; }
 
 .muted { color: var(--muted); }
 .empty { color: var(--muted); text-align: center; padding: 28px 12px; font-size: 14px; }

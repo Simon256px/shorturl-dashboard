@@ -19,8 +19,13 @@ export const SLUG_MAX_LENGTH = 64;
 /**
  * Rejection sampling, so every character is uniformly distributed:
  * `byte % alphabet.length` would quietly bias the first few characters.
+ *
+ * `prefix` is a fixed, public marker (the channel prefix) glued to the front.
+ * `length` still counts the *random* part only, so a prefixed slug has exactly
+ * as much entropy as an unprefixed one — shortening the random tail to keep the
+ * total length constant would trade guessability for cosmetics.
  */
-export function generateSlug(length = 7): string {
+export function generateSlug(length = 7, prefix = ""): string {
   const n = SLUG_ALPHABET.length;
   const limit = 256 - (256 % n); // largest multiple of n representable in a byte
   let out = "";
@@ -31,7 +36,7 @@ export function generateSlug(length = 7): string {
       if (out.length === length) break;
     }
   }
-  return out;
+  return prefix + out;
 }
 
 /** URL-safe random token, used for sessions and API keys. */

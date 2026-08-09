@@ -28,6 +28,19 @@ export interface LinkRow {
   og_title: string | null;
   og_description: string | null;
   og_image: string | null;
+  /** Declared publication channel (a `Channel.id`), or null for unattributed. */
+  channel: string | null;
+}
+
+/** One row of the per-channel breakdown. `channel` is null for unattributed. */
+export interface ChannelStat {
+  channel: string | null;
+  links: number;
+  /** Lifetime clicks, from the denormalised counter — survives retention. */
+  clicks: number;
+  /** Clicks inside the requested window, from retained click rows. */
+  recent: number;
+  visitors: number;
 }
 
 /** True when a link carries enough Open Graph data to be worth rendering. */
@@ -54,7 +67,7 @@ export interface Bucket {
 
 /** Bump alongside a new entry in MIGRATIONS. Exported so tests can assert a
  * fresh database lands on the latest version without hard-coding a number. */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 const MIGRATIONS: string[] = [
   // v1 — initial schema
@@ -123,6 +136,14 @@ const MIGRATIONS: string[] = [
   ALTER TABLE links ADD COLUMN og_title       TEXT;
   ALTER TABLE links ADD COLUMN og_description TEXT;
   ALTER TABLE links ADD COLUMN og_image       TEXT;
+  `,
+
+  // v3 — declared publication channel. Nullable, and null is a first-class
+  // state rather than a gap to fill: existing links keep behaving exactly as
+  // they did, they simply report as unattributed.
+  `
+  ALTER TABLE links ADD COLUMN channel TEXT;
+  CREATE INDEX idx_links_channel ON links(channel);
   `,
 ];
 
@@ -201,12 +222,13 @@ export class Store {
     ogTitle?: string | null;
     ogDescription?: string | null;
     ogImage?: string | null;
+    channel?: string | null;
   }): LinkRow {
     const now = Math.floor(Date.now() / 1000);
     this.#s(
       `INSERT INTO links (slug, target, note, created_at, expires_at,
-                          og_title, og_description, og_image)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                          og_title, og_description, og_image, channel)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       input.slug,
       input.target,
@@ -216,6 +238,7 @@ export class Store {
       input.ogTitle ?? null,
       input.ogDescription ?? null,
       input.ogImage ?? null,
+      input.channel ?? null,
     );
     return this.getLinkBySlug(input.slug)!;
   }
@@ -230,6 +253,7 @@ export class Store {
       ogTitle?: string | null;
       ogDescription?: string | null;
       ogImage?: string | null;
+      channel?: string | null;
     },
   ): void {
     const sets: string[] = [];
@@ -254,6 +278,10 @@ export class Store {
       sets.push("og_image = ?");
       args.push(patch.ogImage);
     }
+    if (patch.channel !== undefined) {
+      sets.push("channel = ?");
+      args.push(patch.channel);
+    }
     if (patch.expiresAt !== undefined) {
       sets.push("expires_at = ?");
       args.push(patch.expiresAt);
@@ -274,35 +302,87 @@ export class Store {
     this.#s("DELETE FROM links WHERE id = ?").run(id);
   }
 
-  listLinks(opts: { limit: number; offset: number; search?: string; sort?: string }): LinkRow[] {
+  /**
+   * Shared WHERE for the list and its count, so a filter can never apply to one
+   * and not the other — that mismatch shows up as a pager that runs off the end.
+   *
+   * `channel: "none"` selects the unattributed links. It has to be a magic value
+   * because an absent filter and "filter for NULL" are different requests and an
+   * empty string cannot express both.
+   */
+  #linkFilter(search?: string, channel?: string): { sql: string; args: string[] } {
+    const where: string[] = [];
+    const args: string[] = [];
+    if (search) {
+      const like = `%${search.replace(/[%_\\]/g, "\\$&")}%`;
+      where.push(
+        `(slug LIKE ? ESCAPE '\\' OR target LIKE ? ESCAPE '\\' OR note LIKE ? ESCAPE '\\')`,
+      );
+      args.push(like, like, like);
+    }
+    if (channel === "none") {
+      where.push("channel IS NULL");
+    } else if (channel) {
+      where.push("channel = ?");
+      args.push(channel);
+    }
+    return { sql: where.length ? ` WHERE ${where.join(" AND ")}` : "", args };
+  }
+
+  listLinks(
+    opts: { limit: number; offset: number; search?: string; sort?: string; channel?: string },
+  ): LinkRow[] {
     const order = opts.sort === "clicks"
       ? "click_count DESC, created_at DESC"
       : opts.sort === "oldest"
       ? "created_at ASC"
       : "created_at DESC";
 
-    if (opts.search) {
-      const like = `%${opts.search.replace(/[%_\\]/g, "\\$&")}%`;
-      return this.#s(
-        `SELECT * FROM links
-         WHERE slug LIKE ? ESCAPE '\\' OR target LIKE ? ESCAPE '\\' OR note LIKE ? ESCAPE '\\'
-         ORDER BY ${order} LIMIT ? OFFSET ?`,
-      ).all(like, like, like, opts.limit, opts.offset) as unknown as LinkRow[];
-    }
-    return this.#s(`SELECT * FROM links ORDER BY ${order} LIMIT ? OFFSET ?`)
-      .all(opts.limit, opts.offset) as unknown as LinkRow[];
+    const f = this.#linkFilter(opts.search, opts.channel);
+    return this.#s(
+      `SELECT * FROM links${f.sql} ORDER BY ${order} LIMIT ? OFFSET ?`,
+    ).all(...f.args, opts.limit, opts.offset) as unknown as LinkRow[];
   }
 
-  countLinks(search?: string): number {
-    if (search) {
-      const like = `%${search.replace(/[%_\\]/g, "\\$&")}%`;
-      const r = this.#s(
-        `SELECT COUNT(*) AS n FROM links
-         WHERE slug LIKE ? ESCAPE '\\' OR target LIKE ? ESCAPE '\\' OR note LIKE ? ESCAPE '\\'`,
-      ).get(like, like, like) as { n: number };
-      return Number(r.n);
-    }
-    return Number((this.#s("SELECT COUNT(*) AS n FROM links").get() as { n: number }).n);
+  countLinks(search?: string, channel?: string): number {
+    const f = this.#linkFilter(search, channel);
+    const r = this.#s(`SELECT COUNT(*) AS n FROM links${f.sql}`).get(...f.args) as { n: number };
+    return Number(r.n);
+  }
+
+  /**
+   * Per-channel breakdown, in two queries deliberately.
+   *
+   * Lifetime clicks come from `links.click_count` and the windowed figures from
+   * the `clicks` rows. Doing both in one LEFT JOIN would multiply each link's
+   * counter by its number of clicks in the window — a plausible-looking total
+   * that is simply wrong. Merging two honest queries in TypeScript is cheaper
+   * than the SQL that avoids the fan-out.
+   */
+  channelStats(sinceSeconds: number): ChannelStat[] {
+    const base = this.#s(
+      `SELECT channel, COUNT(*) AS links, COALESCE(SUM(click_count), 0) AS clicks
+       FROM links GROUP BY channel`,
+    ).all() as unknown as Array<{ channel: string | null; links: number; clicks: number }>;
+
+    const windowed = this.#s(
+      `SELECT l.channel AS channel, COUNT(*) AS recent, COUNT(DISTINCT c.visitor) AS visitors
+       FROM clicks c JOIN links l ON l.id = c.link_id
+       WHERE c.ts >= ? GROUP BY l.channel`,
+    ).all(Math.floor(Date.now() / 1000) - sinceSeconds) as unknown as Array<
+      { channel: string | null; recent: number; visitors: number }
+    >;
+
+    const recent = new Map(windowed.map((r) => [r.channel, r]));
+    return base
+      .map((row) => ({
+        channel: row.channel,
+        links: Number(row.links),
+        clicks: Number(row.clicks),
+        recent: Number(recent.get(row.channel)?.recent ?? 0),
+        visitors: Number(recent.get(row.channel)?.visitors ?? 0),
+      }))
+      .sort((a, b) => b.recent - a.recent || b.clicks - a.clicks || b.links - a.links);
   }
 
   slugExists(slug: string): boolean {

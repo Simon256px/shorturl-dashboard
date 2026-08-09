@@ -1,12 +1,12 @@
 /**
  * Open Graph cards: crawler detection, the served wrapper, escaping, and the
- * v1 → v2 upgrade path.
+ * upgrade path from the original v1 schema.
  */
 
 import { assert, assertEquals, assertFalse, assertStringIncludes } from "@std/assert";
 import { DatabaseSync } from "node:sqlite";
 import { isSocialCrawler } from "../src/util/user-agent.ts";
-import { hasOpenGraph, Store } from "../src/db.ts";
+import { hasOpenGraph, SCHEMA_VERSION, Store } from "../src/db.ts";
 import { normaliseOpenGraph } from "../src/service.ts";
 import { openGraphPage } from "../src/views/opengraph.ts";
 import type { Config } from "../src/config.ts";
@@ -194,7 +194,7 @@ Deno.test("hostile card text cannot break out of the meta attribute", () => {
 
 // --- Upgrade path -------------------------------------------------------------
 
-Deno.test("a v1 database upgrades to v2 without losing rows", async () => {
+Deno.test("a v1 database upgrades to the current schema without losing rows", async () => {
   const path = await Deno.makeTempFile({ suffix: ".db" });
   try {
     // Build a v1 database by hand: the columns and user_version as they shipped.
@@ -228,8 +228,10 @@ Deno.test("a v1 database upgrades to v2 without losing rows", async () => {
     // Opening with the current code must migrate in place.
     const store = new Store(path);
     try {
+      // Against SCHEMA_VERSION, not a literal: this test guards the upgrade
+      // path, and every later migration should run through it for free.
       const version = store.raw.prepare("PRAGMA user_version").get() as { user_version: number };
-      assertEquals(Number(version.user_version), 2);
+      assertEquals(Number(version.user_version), SCHEMA_VERSION);
 
       const link = store.getLinkBySlug("legacy")!;
       assertEquals(link.target, "https://example.com/old");
@@ -239,6 +241,7 @@ Deno.test("a v1 database upgrades to v2 without losing rows", async () => {
       // New columns exist and default to null, so the link behaves as before.
       assertEquals(link.og_title, null);
       assertEquals(link.og_image, null);
+      assertEquals(link.channel, null);
       assertFalse(hasOpenGraph(link));
     } finally {
       store.close();

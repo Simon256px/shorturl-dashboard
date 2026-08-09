@@ -1,5 +1,12 @@
 import { html } from "hono/html";
-import type { Bucket, LinkRow } from "../db.ts";
+import type { Bucket, ChannelStat, LinkRow } from "../db.ts";
+import {
+  channelDisplay,
+  channelIcon,
+  channelLabel,
+  CHANNELS,
+  type DetectedChannel,
+} from "../util/channel.ts";
 import {
   barChart,
   countryFlag,
@@ -100,6 +107,10 @@ export interface OverviewData {
   countries: Bucket[];
   browsers: Bucket[];
   devices: Bucket[];
+  /** Declared channels — what you said when you created each link. */
+  channels: ChannelStat[];
+  /** Channels inferred from referrers — where the clicks actually came from. */
+  detected: DetectedChannel[];
   discord: { enabled: boolean; published: boolean; intervalSeconds: number };
 }
 
@@ -167,6 +178,61 @@ export function overviewPage(ctx: PageCtx, d: OverviewData): Html {
                 `}
             </div>
 
+        <h2>Channels</h2>
+        <p class="subtitle chanhelp">
+              <strong>Declared</strong> is where you said you published each link.
+              <strong>Detected</strong> is what the referrers claim. The two rarely
+              match exactly: Twitter and most mobile apps send no referrer, so
+              detected always reads low. A network showing up in detected that you
+              never declared means someone reshared the link there.
+            </p>
+
+        <div class="grid halves">
+          <div>
+            <h2>Declared channels</h2>
+            <div class="card table-wrap">
+              ${d.channels.length === 0 ? html`<div class="empty">No links yet.</div>` : html`
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Channel</th>
+                      <th class="num">Links</th>
+                      <th class="num">7 d</th>
+                      <th class="num">Visitors</th>
+                      <th class="num">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>${d.channels.map((row) =>
+                    html`
+                      <tr>
+                        <td>${row.channel
+                          ? html`<a href="/dashboard/links?channel=${row.channel}">${
+                            channelDisplay(row.channel)
+                          }</a>`
+                          : html`<a class="muted" href="/dashboard/links?channel=none">${
+                            channelDisplay(null)
+                          }</a>`}</td>
+                        <td class="num">${fmtNum(row.links)}</td>
+                        <td class="num">${fmtNum(row.recent)}</td>
+                        <td class="num">${fmtNum(row.visitors)}</td>
+                        <td class="num">${fmtNum(row.clicks)}</td>
+                      </tr>
+                    `
+                  )}</tbody>
+                </table>
+              `}
+            </div>
+          </div>
+          <div>
+            <h2>Detected channels · 7 d</h2>
+            <div class="card">
+                ${topList(detectedBuckets(d.detected), {
+                  empty: "No referrers recorded — every click arrived without one.",
+                })}
+              </div>
+          </div>
+        </div>
+
         <div class="grid halves">
           <div>
             <h2>Referrers · 7 d</h2>
@@ -207,6 +273,8 @@ export interface LinksData {
   pages: number;
   search: string;
   sort: string;
+  /** `""` = every channel, `"none"` = unattributed only, otherwise a channel id. */
+  channel: string;
   notice?: string;
   error?: string;
 }
@@ -215,7 +283,8 @@ export function linksPage(ctx: PageCtx, d: LinksData): Html {
   const qs = (page: number) =>
     `/dashboard/links?page=${page}` +
     (d.search ? `&q=${encodeURIComponent(d.search)}` : "") +
-    (d.sort ? `&sort=${encodeURIComponent(d.sort)}` : "");
+    (d.sort ? `&sort=${encodeURIComponent(d.sort)}` : "") +
+    (d.channel ? `&channel=${encodeURIComponent(d.channel)}` : "");
 
   return layout({
     title: "Links · shorturl",
@@ -232,6 +301,20 @@ export function linksPage(ctx: PageCtx, d: LinksData): Html {
           <div>
             <label for="q">Search <span class="opt">slug, destination or note</span></label>
             <input type="search" id="q" name="q" value="${d.search}">
+          </div>
+          <div>
+            <label for="channel">Channel</label>
+            <select id="channel" name="channel">
+              <option value="" ${d.channel === "" ? "selected" : ""}>All channels</option>
+              <option value="none" ${d.channel === "none" ? "selected" : ""}>Unattributed</option>
+              ${
+      CHANNELS.map((ch) =>
+        html`<option value="${ch.id}" ${
+          d.channel === ch.id ? "selected" : ""
+        }>${ch.icon} ${ch.label}</option>`
+      )
+    }
+            </select>
           </div>
           <div>
             <label for="sort">Sort</label>
@@ -256,6 +339,7 @@ export function linksPage(ctx: PageCtx, d: LinksData): Html {
             <tr>
               <th>Slug</th>
               <th>Destination</th>
+              <th>Channel</th>
               <th>Status</th>
               <th class="num">Clicks</th>
               <th>Last click</th>
@@ -294,12 +378,69 @@ function linkRow(l: LinkRow): Html {
     <tr>
       <td><a class="mono" href="/dashboard/links/${l.slug}">${l.slug}</a></td>
       <td class="truncate muted">${truncate(l.target, 64)}</td>
+      <td>${channelCell(l.channel)}</td>
       <td>${statusPill(l)}</td>
       <td class="num">${fmtNum(l.click_count)}</td>
       <td class="muted">${fmtRelative(l.last_click_at)}</td>
       <td class="muted">${fmtRelative(l.created_at)}</td>
     </tr>
   `;
+}
+
+/**
+ * One sentence comparing what was declared against what the referrers show.
+ *
+ * Hedged on purpose. Referrer coverage is partial by construction, so a low
+ * detected count is the expected case and never evidence of anything. Only
+ * traffic from a *different* known network is worth flagging.
+ */
+function channelVerdict(declared: string | null, detected: DetectedChannel[]): Html {
+  const known = detected.filter((d) => d.channel !== null);
+  const referred = detected.reduce((n, d) => n + d.clicks, 0);
+
+  if (!declared) {
+    const top = known[0];
+    return top
+      ? html`<span class="muted">Nothing declared — referrers suggest ${
+        channelLabel(top.channel)
+      }.</span>`
+      : html`<span class="muted">No channel declared.</span>`;
+  }
+
+  if (referred === 0) {
+    return html`<span class="muted">
+      No referrer data yet, which proves nothing — most apps send none.
+    </span>`;
+  }
+
+  const elsewhere = known
+    .filter((d) => d.channel !== declared)
+    .reduce((n, d) => n + d.clicks, 0);
+
+  if (elsewhere === 0) {
+    return html`<span class="muted">Referrers agree, as far as they reach.</span>`;
+  }
+  return html`
+    <span
+      class="flag">${String(
+        Math.round((elsewhere / referred) * 100),
+      )} % of referred clicks came from another network — probably reshared.</span>
+  `;
+}
+
+/** Unrecognised hosts are named rather than dropped: they are real traffic. */
+function detectedBuckets(detected: DetectedChannel[]): Bucket[] {
+  return detected.map((d) => ({
+    label: d.channel ? channelDisplay(d.channel) : "🔗 Other referrers",
+    value: d.clicks,
+  }));
+}
+
+function channelCell(channel: string | null): Html {
+  if (!channel) return html`<span class="muted">—</span>`;
+  return html`<a class="pill ch" href="/dashboard/links?channel=${channel}">${
+    channelIcon(channel)
+  } ${channelLabel(channel)}</a>`;
 }
 
 function statusPill(l: LinkRow): Html {
@@ -323,7 +464,10 @@ export function newLinkPage(
     nav: { active: "new" },
     body: html`<div class="wrap">
       <h1>New link</h1>
-      <p class="subtitle">Leave the slug blank to generate a random one.</p>
+      <p class="subtitle">
+        Leave the slug blank to generate a random one — picking a channel prefixes
+        it, so a Twitter link comes out as <span class="mono">/twA8f3k</span>.
+      </p>
       ${opts.error ? flash("err", opts.error) : ""}
       <div class="card">
         <form method="post" action="/dashboard/links" class="stack">
@@ -342,6 +486,7 @@ export function newLinkPage(
               <label for="expires">Expires on <span class="opt">optional, UTC</span></label>
               <input type="date" id="expires" name="expires" value="${v.expires ?? ""}">
             </div>
+            ${channelField(v.channel ?? null)}
           </div>
           <div>
             <label for="note">Note <span class="opt">optional, private</span></label>
@@ -359,6 +504,30 @@ export function newLinkPage(
       </div>
     </div>`,
   });
+}
+
+/**
+ * Channel picker, shared by the create and edit forms.
+ *
+ * A `<select>` rather than a free-text field on purpose: the value is what the
+ * per-channel stats group by, so "Twitter" and "twiter" as two rows would be
+ * worse than useless. The prefix is shown next to each name because it changes
+ * the slug you are about to get.
+ */
+function channelField(selected: string | null): Html {
+  return html`
+    <div>
+      <label for="channel">Channel <span class="opt">optional</span></label>
+      <select id="channel" name="channel">
+        <option value="" ${selected ? "" : "selected"}>— unattributed —</option>
+        ${CHANNELS.map((ch) =>
+          html`<option value="${ch.id}" ${
+            selected === ch.id ? "selected" : ""
+          }>${ch.icon} ${ch.label} · /${ch.prefix}…</option>`
+        )}
+      </select>
+    </div>
+  `;
 }
 
 /**
@@ -409,6 +578,8 @@ export interface LinkDetailData {
   countries: Bucket[];
   browsers: Bucket[];
   devices: Bucket[];
+  /** Referrer-derived channels for this link, for the declared/actual comparison. */
+  detected: DetectedChannel[];
   notice?: string;
   error?: string;
 }
@@ -443,6 +614,18 @@ export function linkDetailPage(ctx: PageCtx, d: LinkDetailData): Html {
         ${statCard("Unique visitors", d.uniqueTotal)}
         ${statCard("Last 24 h", d.day.clicks, `${fmtNum(d.day.visitors)} visitors`)}
         ${statCard("Last 7 days", d.week.clicks, `${fmtNum(d.week.visitors)} visitors`)}
+      </div>
+
+      <h2>Channel</h2>
+      <div class="card">
+        <p class="chanverdict">${channelCell(l.channel)} ${
+      channelVerdict(l.channel, d.detected)
+    }</p>
+        ${
+      d.detected.length > 0
+        ? topList(detectedBuckets(d.detected), { empty: "" })
+        : html`<div class="empty">No referrers recorded for this link yet.</div>`
+    }
       </div>
 
       <h2>Clicks · last 30 days</h2>
@@ -488,7 +671,13 @@ export function linkDetailPage(ctx: PageCtx, d: LinkDetailData): Html {
               <label for="note">Note</label>
               <input type="text" id="note" name="note" maxlength="280" value="${l.note ?? ""}">
             </div>
+            ${channelField(l.channel)}
           </div>
+          <p class="muted fieldhelp">
+            Changing the channel re-labels the stats from here on. It does not
+            rename the slug — <span class="mono">/${l.slug}</span> keeps working
+            wherever you already posted it.
+          </p>
 
           ${
       socialCardFields({

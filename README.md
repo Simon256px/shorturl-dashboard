@@ -23,6 +23,8 @@ client-side JavaScript, no Redis, no Postgres.
 - **Shortening** — random slugs from a CSPRNG, or your own custom slug
 - **Analytics** — clicks, unique visitors, referrers, countries, browsers, OS, device type, daily
   and hourly time series
+- **Channels** — tag a link with where you published it, get per-network stats, and see when the
+  referrers disagree
 - **Dashboard** — server-rendered, dark/light, works without JavaScript
 - **Social cards** — per-link Open Graph title, description and image, so a short link shows _your_
   preview on Discord, X, Slack and the rest
@@ -131,6 +133,31 @@ Discord channel is the quickest way to see the current version.
 
 The trade-off of the named-crawler list: a brand-new platform shows the destination's card until its
 agent is added. That is a missing card, never a broken link.
+
+## Channels
+
+Pick a channel when you create a link and you get per-network numbers on the dashboard, plus a
+prefixed slug so the URL says where it went: Twitter yields `/twA8f3k`, YouTube `/ytQ7bnx`. The
+prefix is cosmetic — the random part keeps its full 7 characters, so a prefixed slug is exactly as
+unguessable as a plain one. A custom slug is never rewritten.
+
+The dashboard reports two columns side by side, and they are **not** the same measurement:
+
+|              | Comes from                         | Reliability                      |
+| ------------ | ---------------------------------- | -------------------------------- |
+| **Declared** | the channel you picked on the link | exact — it is your own statement |
+| **Detected** | the `Referer` header on each click | partial, and unevenly so         |
+
+Detected always reads low. Twitter rewrites links through `t.co`, and its mobile apps — like most
+native apps — send no `Referer` at all, so those clicks are unattributable by construction. That is
+why declaring the channel exists: it is the only figure you can plan against.
+
+The comparison earns its keep in one specific case. A network appearing under _detected_ that you
+never declared means the link is being shared somewhere you did not put it. Each link's page states
+this in a sentence, e.g. _20 % of referred clicks came from another network — probably reshared._ A
+low detected count on its own is the normal case and means nothing.
+
+Channels are a dashboard concept: the JSON API neither accepts nor returns the field.
 
 ## Discord
 
@@ -279,8 +306,8 @@ src/
   discord.ts        the self-editing webhook message
   routes/           dashboard.ts (HTML), api.ts (JSON)
   views/            server-rendered pages, SVG charts, the stylesheet
-  util/             crypto, URL validation, UA parsing, rate limiting, QR
-tests/              92 tests: unit, storage, and end-to-end HTTP
+  util/             crypto, URL validation, UA parsing, channels, rate limiting, QR
+tests/              106 tests: unit, storage, and end-to-end HTTP
 deploy/             systemd unit, Caddyfile, Fedora installer, backup script
 ```
 
