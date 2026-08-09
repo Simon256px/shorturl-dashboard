@@ -280,7 +280,7 @@ src/
   routes/           dashboard.ts (HTML), api.ts (JSON)
   views/            server-rendered pages, SVG charts, the stylesheet
   util/             crypto, URL validation, UA parsing, rate limiting, QR
-tests/              68 tests: unit, storage, and end-to-end HTTP
+tests/              92 tests: unit, storage, and end-to-end HTTP
 deploy/             systemd unit, Caddyfile, Fedora installer, backup script
 ```
 

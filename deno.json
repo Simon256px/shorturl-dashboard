@@ -18,7 +18,7 @@
   "tasks": {
     "dev": "deno run --watch --env-file=.env --allow-net --allow-write=./data --allow-read=./data --allow-env src/main.ts",
     "start": "deno run --env-file=.env --allow-net --allow-write=./data --allow-read=./data --allow-env src/main.ts",
-    "test": "deno test --allow-read --allow-write --allow-env",
+    "test": "deno test --allow-read --allow-write --allow-env --allow-net",
     "check": "deno check src/main.ts && deno lint && deno fmt --check",
     "fmt": "deno fmt",
     "hash-password": "deno run --allow-env scripts/hash-password.ts",
