@@ -8,7 +8,7 @@
 import type { Context } from "hono";
 import type { Config } from "./config.ts";
 import type { ClickInsert, LinkRow, Store } from "./db.ts";
-import { channelById, isChannelId } from "./util/channel.ts";
+import { ChannelSet } from "./util/channel.ts";
 import { generateSlug, SLUG_MAX_LENGTH, SLUG_MIN_LENGTH, visitorId } from "./util/crypto.ts";
 import { referrerHost, validateTarget } from "./util/target-url.ts";
 import { detectCountry, detectLanguage, parseUserAgent } from "./util/user-agent.ts";
@@ -85,16 +85,20 @@ export interface CreateInput {
 }
 
 /**
- * Validates a declared channel against the known list.
+ * Validates a declared channel against the table as it stands right now.
  *
  * An unknown id is rejected rather than stored as-is: the value drives grouping
- * in the dashboard, and a typo would quietly split one network's numbers across
- * two rows. Blank means "unattributed", which is a legitimate answer.
+ * in the dashboard, and a stale one would quietly split a network's numbers
+ * across a row that no longer has a name. Blank means "unattributed", which is a
+ * legitimate answer.
  */
-export function normaliseChannel(raw: string | null | undefined): Result<string | null> {
+export function normaliseChannel(
+  channels: ChannelSet,
+  raw: string | null | undefined,
+): Result<string | null> {
   const v = (raw ?? "").trim().toLowerCase();
   if (v === "") return { ok: true, value: null };
-  if (!isChannelId(v)) {
+  if (!channels.has(v)) {
     return { ok: false, status: 400, error: `"${v}" is not a known channel.` };
   }
   return { ok: true, value: v };
@@ -110,7 +114,10 @@ export function createLink(store: Store, config: Config, input: CreateInput): Re
   const og = normaliseOpenGraph(input, config);
   if (!og.ok) return og;
 
-  const channel = normaliseChannel(input.channel);
+  // Loaded here rather than passed in, so every caller validates against the
+  // live table without having to remember to fetch it.
+  const channels = new ChannelSet(store.listChannels());
+  const channel = normaliseChannel(channels, input.channel);
   if (!channel.ok) return channel;
 
   const note = (input.note ?? "").trim().slice(0, 280) || null;
@@ -134,7 +141,7 @@ export function createLink(store: Store, config: Config, input: CreateInput): Re
   // A declared channel marks the generated slug, so `/twA8f3k` is recognisable
   // at a glance in a tweet. A custom slug above is left exactly as typed — the
   // prefix is a convenience for the generator, not a naming rule to enforce.
-  const prefix = channelById(channel.value)?.prefix ?? "";
+  const prefix = channels.get(channel.value)?.prefix ?? "";
 
   // Random slug: retry on collision, widening the alphabet space as we go.
   for (let attempt = 0; attempt < 8; attempt++) {

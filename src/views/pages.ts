@@ -1,12 +1,6 @@
 import { html } from "hono/html";
 import type { Bucket, ChannelStat, LinkRow } from "../db.ts";
-import {
-  channelDisplay,
-  channelIcon,
-  channelLabel,
-  CHANNELS,
-  type DetectedChannel,
-} from "../util/channel.ts";
+import type { ChannelRow, ChannelSet, DetectedChannel } from "../util/channel.ts";
 import {
   barChart,
   countryFlag,
@@ -111,6 +105,8 @@ export interface OverviewData {
   channels: ChannelStat[];
   /** Channels inferred from referrers — where the clicks actually came from. */
   detected: DetectedChannel[];
+  /** The channel table, for labels and icons. */
+  channelSet: ChannelSet;
   discord: { enabled: boolean; published: boolean; intervalSeconds: number };
 }
 
@@ -207,10 +203,10 @@ export function overviewPage(ctx: PageCtx, d: OverviewData): Html {
                       <tr>
                         <td>${row.channel
                           ? html`<a href="/dashboard/links?channel=${row.channel}">${
-                            channelDisplay(row.channel)
+                            d.channelSet.display(row.channel)
                           }</a>`
                           : html`<a class="muted" href="/dashboard/links?channel=none">${
-                            channelDisplay(null)
+                            d.channelSet.display(null)
                           }</a>`}</td>
                         <td class="num">${fmtNum(row.links)}</td>
                         <td class="num">${fmtNum(row.recent)}</td>
@@ -226,7 +222,7 @@ export function overviewPage(ctx: PageCtx, d: OverviewData): Html {
           <div>
             <h2>Detected channels · 7 d</h2>
             <div class="card">
-                ${topList(detectedBuckets(d.detected), {
+                ${topList(detectedBuckets(d.detected, d.channelSet), {
                   empty: "No referrers recorded — every click arrived without one.",
                 })}
               </div>
@@ -275,6 +271,7 @@ export interface LinksData {
   sort: string;
   /** `""` = every channel, `"none"` = unattributed only, otherwise a channel id. */
   channel: string;
+  channelSet: ChannelSet;
   notice?: string;
   error?: string;
 }
@@ -308,7 +305,7 @@ export function linksPage(ctx: PageCtx, d: LinksData): Html {
               <option value="" ${d.channel === "" ? "selected" : ""}>All channels</option>
               <option value="none" ${d.channel === "none" ? "selected" : ""}>Unattributed</option>
               ${
-      CHANNELS.map((ch) =>
+      d.channelSet.all.map((ch) =>
         html`<option value="${ch.id}" ${
           d.channel === ch.id ? "selected" : ""
         }>${ch.icon} ${ch.label}</option>`
@@ -346,7 +343,7 @@ export function linksPage(ctx: PageCtx, d: LinksData): Html {
               <th>Created</th>
             </tr>
           </thead>
-          <tbody>${d.links.map((l) => linkRow(l))}</tbody>
+          <tbody>${d.links.map((l) => linkRow(l, d.channelSet))}</tbody>
         </table>
       `
     }
@@ -373,12 +370,12 @@ export function linksPage(ctx: PageCtx, d: LinksData): Html {
   });
 }
 
-function linkRow(l: LinkRow): Html {
+function linkRow(l: LinkRow, channels: ChannelSet): Html {
   return html`
     <tr>
       <td><a class="mono" href="/dashboard/links/${l.slug}">${l.slug}</a></td>
       <td class="truncate muted">${truncate(l.target, 64)}</td>
-      <td>${channelCell(l.channel)}</td>
+      <td>${channelCell(l.channel, channels)}</td>
       <td>${statusPill(l)}</td>
       <td class="num">${fmtNum(l.click_count)}</td>
       <td class="muted">${fmtRelative(l.last_click_at)}</td>
@@ -394,7 +391,11 @@ function linkRow(l: LinkRow): Html {
  * detected count is the expected case and never evidence of anything. Only
  * traffic from a *different* known network is worth flagging.
  */
-function channelVerdict(declared: string | null, detected: DetectedChannel[]): Html {
+function channelVerdict(
+  declared: string | null,
+  detected: DetectedChannel[],
+  channels: ChannelSet,
+): Html {
   const known = detected.filter((d) => d.channel !== null);
   const referred = detected.reduce((n, d) => n + d.clicks, 0);
 
@@ -402,7 +403,7 @@ function channelVerdict(declared: string | null, detected: DetectedChannel[]): H
     const top = known[0];
     return top
       ? html`<span class="muted">Nothing declared — referrers suggest ${
-        channelLabel(top.channel)
+        channels.label(top.channel)
       }.</span>`
       : html`<span class="muted">No channel declared.</span>`;
   }
@@ -429,18 +430,18 @@ function channelVerdict(declared: string | null, detected: DetectedChannel[]): H
 }
 
 /** Unrecognised hosts are named rather than dropped: they are real traffic. */
-function detectedBuckets(detected: DetectedChannel[]): Bucket[] {
+function detectedBuckets(detected: DetectedChannel[], channels: ChannelSet): Bucket[] {
   return detected.map((d) => ({
-    label: d.channel ? channelDisplay(d.channel) : "🔗 Other referrers",
+    label: d.channel ? channels.display(d.channel) : "🔗 Other referrers",
     value: d.clicks,
   }));
 }
 
-function channelCell(channel: string | null): Html {
+function channelCell(channel: string | null, channels: ChannelSet): Html {
   if (!channel) return html`<span class="muted">—</span>`;
   return html`<a class="pill ch" href="/dashboard/links?channel=${channel}">${
-    channelIcon(channel)
-  } ${channelLabel(channel)}</a>`;
+    channels.icon(channel)
+  } ${channels.label(channel)}</a>`;
 }
 
 function statusPill(l: LinkRow): Html {
@@ -455,6 +456,7 @@ function statusPill(l: LinkRow): Html {
 
 export function newLinkPage(
   ctx: PageCtx,
+  channels: ChannelSet,
   opts: { error?: string; values?: Record<string, string> } = {},
 ): Html {
   const v = opts.values ?? {};
@@ -486,7 +488,7 @@ export function newLinkPage(
               <label for="expires">Expires on <span class="opt">optional, UTC</span></label>
               <input type="date" id="expires" name="expires" value="${v.expires ?? ""}">
             </div>
-            ${channelField(v.channel ?? null)}
+            ${channelField(v.channel ?? null, channels)}
           </div>
           <div>
             <label for="note">Note <span class="opt">optional, private</span></label>
@@ -512,15 +514,15 @@ export function newLinkPage(
  * A `<select>` rather than a free-text field on purpose: the value is what the
  * per-channel stats group by, so "Twitter" and "twiter" as two rows would be
  * worse than useless. The prefix is shown next to each name because it changes
- * the slug you are about to get.
+ * the slug you are about to get. Manage the list under Settings.
  */
-function channelField(selected: string | null): Html {
+function channelField(selected: string | null, channels: ChannelSet): Html {
   return html`
     <div>
       <label for="channel">Channel <span class="opt">optional</span></label>
       <select id="channel" name="channel">
         <option value="" ${selected ? "" : "selected"}>— unattributed —</option>
-        ${CHANNELS.map((ch) =>
+        ${channels.all.map((ch) =>
           html`<option value="${ch.id}" ${
             selected === ch.id ? "selected" : ""
           }>${ch.icon} ${ch.label} · /${ch.prefix}…</option>`
@@ -580,6 +582,7 @@ export interface LinkDetailData {
   devices: Bucket[];
   /** Referrer-derived channels for this link, for the declared/actual comparison. */
   detected: DetectedChannel[];
+  channelSet: ChannelSet;
   notice?: string;
   error?: string;
 }
@@ -618,12 +621,12 @@ export function linkDetailPage(ctx: PageCtx, d: LinkDetailData): Html {
 
       <h2>Channel</h2>
       <div class="card">
-        <p class="chanverdict">${channelCell(l.channel)} ${
-      channelVerdict(l.channel, d.detected)
+        <p class="chanverdict">${channelCell(l.channel, d.channelSet)} ${
+      channelVerdict(l.channel, d.detected, d.channelSet)
     }</p>
         ${
       d.detected.length > 0
-        ? topList(detectedBuckets(d.detected), { empty: "" })
+        ? topList(detectedBuckets(d.detected, d.channelSet), { empty: "" })
         : html`<div class="empty">No referrers recorded for this link yet.</div>`
     }
       </div>
@@ -671,7 +674,7 @@ export function linkDetailPage(ctx: PageCtx, d: LinkDetailData): Html {
               <label for="note">Note</label>
               <input type="text" id="note" name="note" maxlength="280" value="${l.note ?? ""}">
             </div>
-            ${channelField(l.channel)}
+            ${channelField(l.channel, d.channelSet)}
           </div>
           <p class="muted fieldhelp">
             Changing the channel re-labels the stats from here on. It does not
@@ -766,6 +769,9 @@ export interface SettingsData {
   keys: Array<
     { id: number; name: string; prefix: string; created_at: number; last_used_at: number | null }
   >;
+  channels: readonly ChannelRow[];
+  /** Links per channel id, so the table can warn before a delete detaches them. */
+  channelUse: Map<string, number>;
   newKey?: string;
   notice?: string;
   error?: string;
@@ -788,7 +794,7 @@ export function settingsPage(ctx: PageCtx, d: SettingsData): Html {
     body: html`<div class="wrap">
       <h1>Settings</h1>
       <p class="subtitle">Runtime configuration comes from the environment; this page is read-only
-        except for API keys.</p>
+        except for API keys and channels.</p>
       ${d.notice ? flash("ok", d.notice) : ""}
       ${d.error ? flash("err", d.error) : ""}
 
@@ -800,6 +806,79 @@ export function settingsPage(ctx: PageCtx, d: SettingsData): Html {
           </div>`
         : ""
     }
+
+      <h2>Channels</h2>
+      <p class="subtitle chanhelp">
+        The networks offered when you create a link. The twelve shipped by default are
+        ordinary rows — rename, re-prefix or delete any of them. Editing a prefix never
+        rewrites slugs that already exist.
+      </p>
+      <div class="card table-wrap">
+        ${
+      d.channels.length === 0 ? html`<div class="empty">No channels — add one below.</div>` : html`
+        <table>
+          <thead>
+            <tr>
+              <th></th>
+              <th>Name</th>
+              <th>Prefix</th>
+              <th>Referrer hosts</th>
+              <th class="num">Links</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>${d.channels.map((ch) =>
+            html`
+              <tr>
+                <td>${ch.icon}</td>
+                <td>${ch.label}</td>
+                <td class="mono muted">/${ch.prefix}…</td>
+                <td class="muted truncate">${ch.hosts.length === 0
+                  ? html`<span class="muted">— none, so it is never auto-detected</span>`
+                  : truncate(ch.hosts.join(", "), 52)}</td>
+                <td class="num">${fmtNum(d.channelUse.get(ch.id) ?? 0)}</td>
+                <td>
+                  <a class="btn secondary small" href="/dashboard/channels/${ch.id}">Edit</a>
+                </td>
+              </tr>
+            `
+          )}</tbody>
+        </table>
+      `
+    }
+      </div>
+      <div class="card">
+        <form method="post" action="/dashboard/channels" class="stack">
+          <div class="row">
+            <div>
+              <label for="ch_label">Name</label>
+              <input type="text" id="ch_label" name="label" required maxlength="40"
+                     placeholder="Pinterest">
+            </div>
+            <div>
+              <label for="ch_prefix">Slug prefix <span class="opt">2–3 letters, no l</span></label>
+              <input type="text" id="ch_prefix" name="prefix" required pattern="[A-Za-z]{2,3}"
+                     placeholder="pn">
+            </div>
+            <div>
+              <label for="ch_icon">Icon <span class="opt">emoji</span></label>
+              <input type="text" id="ch_icon" name="icon" required placeholder="📌">
+            </div>
+          </div>
+          <div>
+            <label for="ch_hosts">Referrer hosts <span class="opt">optional, comma or
+              newline separated</span></label>
+            <input type="text" id="ch_hosts" name="hosts"
+                   placeholder="pinterest.com, pin.it">
+          </div>
+          <p class="muted fieldhelp">
+            Hosts are only used to detect traffic arriving from that network. Leave blank and
+            the channel still works — you just won't get the declared/detected comparison for
+            it. Pasting a full URL is fine, it gets reduced to the hostname.
+          </p>
+          <div class="actions"><button class="btn" type="submit">Add channel</button></div>
+        </form>
+      </div>
 
       <h2>API keys</h2>
       <div class="card">
@@ -878,6 +957,87 @@ export function settingsPage(ctx: PageCtx, d: SettingsData): Html {
 }
 
 // --- Errors -------------------------------------------------------------------
+
+// --- Channel editor -----------------------------------------------------------
+
+export interface ChannelEditData {
+  channel: ChannelRow;
+  /** How many links point at it, which decides how loud the delete button is. */
+  inUse: number;
+  notice?: string;
+  error?: string;
+}
+
+export function channelEditPage(ctx: PageCtx, d: ChannelEditData): Html {
+  const ch = d.channel;
+  return layout({
+    title: `${ch.label} · channels · shorturl`,
+    cssHref: ctx.cssHref,
+    nav: { active: "settings" },
+    body: html`<div class="wrap">
+      <h1>${ch.icon} ${ch.label}</h1>
+      <p class="subtitle">
+        Channel <span class="mono">${ch.id}</span> · ${fmtNum(d.inUse)} link${
+      d.inUse === 1 ? "" : "s"
+    } attached
+      </p>
+      ${d.notice ? flash("ok", d.notice) : ""}
+      ${d.error ? flash("err", d.error) : ""}
+
+      <div class="card">
+        <form method="post" action="/dashboard/channels/${ch.id}" class="stack">
+          <div class="row">
+            <div>
+              <label for="label">Name</label>
+              <input type="text" id="label" name="label" required maxlength="40"
+                     value="${ch.label}">
+            </div>
+            <div>
+              <label for="prefix">Slug prefix <span class="opt">2–3 letters, no l</span></label>
+              <input type="text" id="prefix" name="prefix" required pattern="[A-Za-z]{2,3}"
+                     value="${ch.prefix}">
+            </div>
+            <div>
+              <label for="icon">Icon <span class="opt">emoji</span></label>
+              <input type="text" id="icon" name="icon" required value="${ch.icon}">
+            </div>
+          </div>
+          <div>
+            <label for="hosts">Referrer hosts <span class="opt">comma or newline
+              separated</span></label>
+            <input type="text" id="hosts" name="hosts" value="${ch.hosts.join(", ")}">
+          </div>
+          <p class="muted fieldhelp">
+            The name and icon are labels only — changing them relabels every statistic for this
+            channel, past clicks included, because the rows are grouped by the id
+            <span class="mono">${ch.id}</span>, which never changes. Changing the prefix only
+            affects slugs generated from now on.
+          </p>
+          <div class="actions">
+            <button class="btn" type="submit">Save changes</button>
+            <a class="btn secondary" href="/dashboard/settings">Back to settings</a>
+          </div>
+        </form>
+      </div>
+
+      <h2>Danger zone</h2>
+      <div class="card actions">
+        <form method="post" action="/dashboard/channels/${ch.id}/delete" class="inline-form">
+          <button class="btn danger" type="submit">Delete this channel</button>
+        </form>
+        <span class="muted">
+          ${
+      d.inUse === 0 ? html`No link uses it, so this removes a menu entry and nothing else.` : html`
+        <strong>${fmtNum(d.inUse)} link${d.inUse === 1 ? "" : "s"}</strong> will become
+        unattributed. The links, their slugs and every recorded click are kept — only the
+        channel label goes away, and you can reassign them afterwards.
+      `
+    }
+        </span>
+      </div>
+    </div>`,
+  });
+}
 
 export function errorPage(ctx: PageCtx, status: number, message: string): Html {
   return layout({

@@ -13,6 +13,7 @@
 
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { randomBytes } from "node:crypto";
+import { CHANNEL_SEEDS, type ChannelRow, packHosts, unpackHosts } from "./util/channel.ts";
 
 export interface LinkRow {
   id: number;
@@ -67,7 +68,12 @@ export interface Bucket {
 
 /** Bump alongside a new entry in MIGRATIONS. Exported so tests can assert a
  * fresh database lands on the latest version without hard-coding a number. */
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
+
+/** Single-quote escaping for the seed INSERT built below. */
+function sqlLiteral(s: string): string {
+  return `'${s.replace(/'/g, "''")}'`;
+}
 
 const MIGRATIONS: string[] = [
   // v1 — initial schema
@@ -144,6 +150,33 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE links ADD COLUMN channel TEXT;
   CREATE INDEX idx_links_channel ON links(channel);
+  `,
+
+  // v4 — the channel list becomes editable data instead of a constant in the
+  // code. Seeded with the same twelve networks that used to be hard-coded, and
+  // no row is privileged afterwards: any of them can be renamed or deleted.
+  //
+  // No foreign key from links.channel: adding one to an existing column means
+  // rebuilding the table, and deleteChannel() already detaches links inside the
+  // same transaction. A dangling id would in any case degrade to "Unattributed"
+  // rather than break a redirect.
+  `
+  CREATE TABLE channels (
+    id         TEXT    PRIMARY KEY,
+    label      TEXT    NOT NULL,
+    prefix     TEXT    NOT NULL UNIQUE,
+    icon       TEXT    NOT NULL,
+    hosts      TEXT    NOT NULL,
+    sort_order INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  INSERT INTO channels (id, label, prefix, icon, hosts, sort_order, created_at) VALUES
+  ${
+    CHANNEL_SEEDS.map((c, i) =>
+      `(${sqlLiteral(c.id)}, ${sqlLiteral(c.label)}, ${sqlLiteral(c.prefix)}, ` +
+      `${sqlLiteral(c.icon)}, ${sqlLiteral(packHosts([...c.hosts]))}, ${i}, unixepoch())`
+    ).join(",\n  ")
+  };
   `,
 ];
 
@@ -383,6 +416,106 @@ export class Store {
         visitors: Number(recent.get(row.channel)?.visitors ?? 0),
       }))
       .sort((a, b) => b.recent - a.recent || b.clicks - a.clicks || b.links - a.links);
+  }
+
+  // --- Channels ------------------------------------------------------------
+
+  listChannels(): ChannelRow[] {
+    const rows = this.#s(
+      "SELECT id, label, prefix, icon, hosts, sort_order FROM channels ORDER BY sort_order",
+    ).all() as unknown as Array<Omit<ChannelRow, "hosts"> & { hosts: string }>;
+    return rows.map((r) => ({ ...r, hosts: unpackHosts(r.hosts) }));
+  }
+
+  getChannel(id: string): ChannelRow | undefined {
+    const r = this.#s(
+      "SELECT id, label, prefix, icon, hosts, sort_order FROM channels WHERE id = ?",
+    ).get(id) as (Omit<ChannelRow, "hosts"> & { hosts: string }) | undefined;
+    return r ? { ...r, hosts: unpackHosts(r.hosts) } : undefined;
+  }
+
+  /**
+   * Who already owns a prefix, if anyone. `exceptId` lets an edit keep its own
+   * prefix without tripping the uniqueness check against itself.
+   */
+  channelPrefixOwner(prefix: string, exceptId?: string): string | undefined {
+    const r = this.#s(
+      "SELECT id FROM channels WHERE prefix = ? AND id != ?",
+    ).get(prefix, exceptId ?? "") as { id: string } | undefined;
+    return r?.id;
+  }
+
+  createChannel(input: Omit<ChannelRow, "sort_order">): ChannelRow {
+    const next = this.#s("SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM channels")
+      .get() as { n: number };
+    this.#s(
+      `INSERT INTO channels (id, label, prefix, icon, hosts, sort_order, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      input.id,
+      input.label,
+      input.prefix,
+      input.icon,
+      packHosts(input.hosts),
+      Number(next.n),
+      Math.floor(Date.now() / 1000),
+    );
+    return this.getChannel(input.id)!;
+  }
+
+  updateChannel(id: string, patch: Partial<Omit<ChannelRow, "id" | "sort_order">>): void {
+    const sets: string[] = [];
+    const args: Array<string | number> = [];
+    if (patch.label !== undefined) {
+      sets.push("label = ?");
+      args.push(patch.label);
+    }
+    if (patch.prefix !== undefined) {
+      sets.push("prefix = ?");
+      args.push(patch.prefix);
+    }
+    if (patch.icon !== undefined) {
+      sets.push("icon = ?");
+      args.push(patch.icon);
+    }
+    if (patch.hosts !== undefined) {
+      sets.push("hosts = ?");
+      args.push(packHosts(patch.hosts));
+    }
+    if (sets.length === 0) return;
+    args.push(id);
+    this.#s(`UPDATE channels SET ${sets.join(", ")} WHERE id = ?`).run(...args);
+  }
+
+  /**
+   * Deletes a channel and detaches its links, returning how many were detached.
+   *
+   * One transaction, because the alternative — links pointing at a channel that
+   * no longer exists — would silently report as "Unattributed" while still
+   * carrying a stale id, and the two states would drift apart in exports.
+   * Clicks are untouched: the history belongs to the link, not the label.
+   */
+  deleteChannel(id: string): number {
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      const affected = this.#s("SELECT COUNT(*) AS n FROM links WHERE channel = ?")
+        .get(id) as { n: number };
+      this.#s("UPDATE links SET channel = NULL WHERE channel = ?").run(id);
+      this.#s("DELETE FROM channels WHERE id = ?").run(id);
+      this.#db.exec("COMMIT");
+      return Number(affected.n);
+    } catch (e) {
+      this.#db.exec("ROLLBACK");
+      throw e;
+    }
+  }
+
+  /** Link counts per channel id, for the management table. */
+  countLinksByChannel(): Map<string, number> {
+    const rows = this.#s(
+      "SELECT channel, COUNT(*) AS n FROM links WHERE channel IS NOT NULL GROUP BY channel",
+    ).all() as unknown as Array<{ channel: string; n: number }>;
+    return new Map(rows.map((r) => [r.channel, Number(r.n)]));
   }
 
   slugExists(slug: string): boolean {

@@ -17,10 +17,18 @@ import {
   toCsv,
   validateSlug,
 } from "../service.ts";
-import { foldReferrers, isChannelId } from "../util/channel.ts";
+import {
+  ChannelSet,
+  deriveChannelId,
+  normaliseHosts,
+  validateIcon,
+  validateLabel,
+  validatePrefix,
+} from "../util/channel.ts";
 import { validateTarget } from "../util/target-url.ts";
 import { qrSvg } from "../util/qr.ts";
 import {
+  channelEditPage,
   errorPage,
   linkDetailPage,
   linksPage,
@@ -48,6 +56,15 @@ export function registerDashboard(app: AppHono, ctx: AppCtx): void {
   /** Origin gate for every mutating dashboard request. */
   const guard = (c: Context) => csrfOk(c, config, { kind: "session", label: "admin" });
 
+  /**
+   * The channel table, read fresh per request.
+   *
+   * Not cached: it is one indexed SELECT over a dozen rows, and a cache would
+   * have to be invalidated from every edit path — including the ones added
+   * later, which is exactly the invalidation people forget.
+   */
+  const channelSet = () => new ChannelSet(store.listChannels());
+
   const configSummary = () => ({
     baseUrl: config.baseUrl,
     publicShortening: config.publicShortening,
@@ -61,8 +78,10 @@ export function registerDashboard(app: AppHono, ctx: AppCtx): void {
   // --- Overview --------------------------------------------------------------
 
   app.get("/dashboard", (c) => {
+    const channels = channelSet();
     return c.html(
       overviewPage(ctx.page, {
+        channelSet: channels,
         totals: store.globalTotals(),
         day: store.clicksSince(86400),
         week: store.clicksSince(WEEK),
@@ -76,7 +95,7 @@ export function registerDashboard(app: AppHono, ctx: AppCtx): void {
         // A high limit here, unlike the display lists above: this feeds an
         // aggregation, and truncating it would drop hosts out of their channel's
         // total rather than merely hiding a row.
-        detected: foldReferrers(
+        detected: channels.foldReferrers(
           store.topDimension("referrer_host", { limit: 500, sinceSeconds: WEEK }),
         ),
         discord: {
@@ -98,8 +117,9 @@ export function registerDashboard(app: AppHono, ctx: AppCtx): void {
 
     // An unrecognised value falls back to "all" rather than erroring: this is a
     // URL people edit and share, and a 400 on a stale bookmark is unhelpful.
+    const channels = channelSet();
     const channelRaw = (c.req.query("channel") ?? "").trim().toLowerCase();
-    const channel = channelRaw === "none" || isChannelId(channelRaw) ? channelRaw : "";
+    const channel = channelRaw === "none" || channels.has(channelRaw) ? channelRaw : "";
 
     const total = store.countLinks(search || undefined, channel || undefined);
     const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -119,6 +139,7 @@ export function registerDashboard(app: AppHono, ctx: AppCtx): void {
         search,
         sort,
         channel,
+        channelSet: channels,
         notice: c.req.query("ok") ?? undefined,
         error: c.req.query("error") ?? undefined,
       }),
@@ -127,7 +148,7 @@ export function registerDashboard(app: AppHono, ctx: AppCtx): void {
 
   // --- Create ----------------------------------------------------------------
 
-  app.get("/dashboard/new", (c) => c.html(newLinkPage(ctx.page)));
+  app.get("/dashboard/new", (c) => c.html(newLinkPage(ctx.page, channelSet())));
 
   app.post("/dashboard/links", async (c) => {
     if (!guard(c)) return c.text("Cross-origin request rejected", 403);
@@ -145,7 +166,9 @@ export function registerDashboard(app: AppHono, ctx: AppCtx): void {
     };
 
     const expiry = parseExpiry(values.expires);
-    if (!expiry.ok) return c.html(newLinkPage(ctx.page, { error: expiry.error, values }), 400);
+    if (!expiry.ok) {
+      return c.html(newLinkPage(ctx.page, channelSet(), { error: expiry.error, values }), 400);
+    }
 
     const result = createLink(store, config, {
       target: values.target,
@@ -159,7 +182,7 @@ export function registerDashboard(app: AppHono, ctx: AppCtx): void {
     });
     if (!result.ok) {
       return c.html(
-        newLinkPage(ctx.page, { error: result.error, values }),
+        newLinkPage(ctx.page, channelSet(), { error: result.error, values }),
         result.status as 400,
       );
     }
@@ -183,6 +206,7 @@ export function registerDashboard(app: AppHono, ctx: AppCtx): void {
       c.header("content-security-policy", contentSecurityPolicy("'self' data: https:"));
     }
 
+    const channels = channelSet();
     return c.html(
       linkDetailPage(ctx.page, {
         link,
@@ -196,7 +220,8 @@ export function registerDashboard(app: AppHono, ctx: AppCtx): void {
         countries: store.topDimension("country", { limit: 8, linkId: link.id }),
         browsers: store.topDimension("browser", { limit: 8, linkId: link.id }),
         devices: store.topDimension("device", { limit: 8, linkId: link.id }),
-        detected: foldReferrers(
+        channelSet: channels,
+        detected: channels.foldReferrers(
           store.topDimension("referrer_host", { limit: 500, linkId: link.id }),
         ),
         notice: c.req.query("ok") ?? undefined,
@@ -237,7 +262,7 @@ export function registerDashboard(app: AppHono, ctx: AppCtx): void {
     }, config);
     if (!og.ok) return back(og.error, "error");
 
-    const channel = normaliseChannel(String(body.channel ?? ""));
+    const channel = normaliseChannel(channelSet(), String(body.channel ?? ""));
     if (!channel.ok) return back(channel.error, "error");
 
     store.updateLink(link.id, {
@@ -303,6 +328,8 @@ export function registerDashboard(app: AppHono, ctx: AppCtx): void {
     return c.html(
       settingsPage(ctx.page, {
         keys: store.listApiKeys(),
+        channels: store.listChannels(),
+        channelUse: store.countLinksByChannel(),
         notice: c.req.query("ok") ?? undefined,
         error: c.req.query("error") ?? undefined,
         config: configSummary(),
@@ -322,6 +349,8 @@ export function registerDashboard(app: AppHono, ctx: AppCtx): void {
     return c.html(
       settingsPage(ctx.page, {
         keys: store.listApiKeys(),
+        channels: store.listChannels(),
+        channelUse: store.countLinksByChannel(),
         newKey: secret,
         notice: `API key "${name}" created.`,
         config: configSummary(),
@@ -340,6 +369,118 @@ export function registerDashboard(app: AppHono, ctx: AppCtx): void {
     if (!guard(c)) return c.text("Cross-origin request rejected", 403);
     store.deleteAllSessions();
     return c.redirect("/login", 303);
+  });
+
+  // --- Channels --------------------------------------------------------------
+
+  const settingsBack = (c: Context, msg: string, key: "ok" | "error") =>
+    c.redirect(`/dashboard/settings?${key}=${encodeURIComponent(msg)}`, 303);
+
+  /**
+   * Validates the four editable fields.
+   *
+   * Shared by create and update so the two cannot disagree about what a valid
+   * channel is — the failure mode being a row you can save but not re-save.
+   */
+  function readChannelForm(body: Record<string, unknown>) {
+    const label = validateLabel(String(body.label ?? ""));
+    if (!label.ok) return label;
+    const prefix = validatePrefix(String(body.prefix ?? ""));
+    if (!prefix.ok) return prefix;
+    const icon = validateIcon(String(body.icon ?? ""));
+    if (!icon.ok) return icon;
+    const hosts = normaliseHosts(String(body.hosts ?? ""));
+    if (!hosts.ok) return hosts;
+    return {
+      ok: true as const,
+      value: { label: label.value, prefix: prefix.value, icon: icon.value, hosts: hosts.value },
+    };
+  }
+
+  app.post("/dashboard/channels", async (c) => {
+    if (!guard(c)) return c.text("Cross-origin request rejected", 403);
+
+    const form = readChannelForm(await c.req.parseBody());
+    if (!form.ok) return settingsBack(c, form.error, "error");
+
+    const id = deriveChannelId(form.value.label);
+    if (!id.ok) return settingsBack(c, id.error, "error");
+    if (store.getChannel(id.value)) {
+      return settingsBack(c, `A channel named "${form.value.label}" already exists.`, "error");
+    }
+    const clash = store.channelPrefixOwner(form.value.prefix);
+    if (clash) {
+      return settingsBack(
+        c,
+        `The prefix "${form.value.prefix}" is already used by ${store.getChannel(clash)!.label}.`,
+        "error",
+      );
+    }
+
+    store.createChannel({ id: id.value, ...form.value });
+    return settingsBack(c, `Channel "${form.value.label}" added.`, "ok");
+  });
+
+  app.get("/dashboard/channels/:id", (c) => {
+    const channel = store.getChannel(c.req.param("id"));
+    if (!channel) return c.html(errorPage(ctx.page, 404, "No such channel."), 404);
+    return c.html(
+      channelEditPage(ctx.page, {
+        channel,
+        inUse: store.countLinksByChannel().get(channel.id) ?? 0,
+        notice: c.req.query("ok") ?? undefined,
+        error: c.req.query("error") ?? undefined,
+      }),
+    );
+  });
+
+  app.post("/dashboard/channels/:id", async (c) => {
+    if (!guard(c)) return c.text("Cross-origin request rejected", 403);
+
+    const id = c.req.param("id");
+    const channel = store.getChannel(id);
+    if (!channel) return c.html(errorPage(ctx.page, 404, "No such channel."), 404);
+
+    const back = (msg: string, key: "ok" | "error") =>
+      c.redirect(
+        `/dashboard/channels/${encodeURIComponent(id)}?${key}=${encodeURIComponent(msg)}`,
+        303,
+      );
+
+    const form = readChannelForm(await c.req.parseBody());
+    if (!form.ok) return back(form.error, "error");
+
+    // The id is derived from the original name and deliberately frozen: it is
+    // what every link and every statistic already points at, so renaming a
+    // channel relabels its history instead of orphaning it.
+    const clash = store.channelPrefixOwner(form.value.prefix, id);
+    if (clash) {
+      return back(
+        `The prefix "${form.value.prefix}" is already used by ${store.getChannel(clash)!.label}.`,
+        "error",
+      );
+    }
+
+    store.updateChannel(id, form.value);
+    return back("Changes saved", "ok");
+  });
+
+  app.post("/dashboard/channels/:id/delete", (c) => {
+    if (!guard(c)) return c.text("Cross-origin request rejected", 403);
+
+    const channel = store.getChannel(c.req.param("id"));
+    if (!channel) return c.html(errorPage(ctx.page, 404, "No such channel."), 404);
+
+    const detached = store.deleteChannel(channel.id);
+    return settingsBack(
+      c,
+      detached === 0
+        ? `Channel "${channel.label}" deleted.`
+        : `Channel "${channel.label}" deleted — ${detached} link${
+          detached === 1 ? "" : "s"
+        } now unattributed.`,
+      "ok",
+    );
   });
 
   function csvResponse(c: Context, rows: Array<Record<string, unknown>>, filename: string) {

@@ -24,7 +24,7 @@ client-side JavaScript, no Redis, no Postgres.
 - **Analytics** — clicks, unique visitors, referrers, countries, browsers, OS, device type, daily
   and hourly time series
 - **Channels** — tag a link with where you published it, get per-network stats, and see when the
-  referrers disagree
+  referrers disagree. The network list is yours to edit
 - **Dashboard** — server-rendered, dark/light, works without JavaScript
 - **Social cards** — per-link Open Graph title, description and image, so a short link shows _your_
   preview on Discord, X, Slack and the rest
@@ -156,6 +156,30 @@ The comparison earns its keep in one specific case. A network appearing under _d
 never declared means the link is being shared somewhere you did not put it. Each link's page states
 this in a sentence, e.g. _20 % of referred clicks came from another network — probably reshared._ A
 low detected count on its own is the normal case and means nothing.
+
+### Editing the list
+
+Twelve networks ship by default — X/Twitter, YouTube, Discord, Instagram, GitHub, TikTok, Pinterest,
+LinkedIn, Reddit, Facebook, Newsletter, Website/blog. They are ordinary rows in the `channels`
+table, seeded on first run and **not** privileged afterwards: rename, re-prefix, re-icon or delete
+any of them under **Settings → Channels**, and add your own.
+
+A channel needs a name, a 2–3 letter prefix and an icon. Referrer hosts are optional — without them
+the channel still works, you just get no declared-versus-detected comparison for it. Paste what you
+have; `https://www.twitch.tv/videos/1` is stored as `twitch.tv`, and subdomains match automatically.
+
+Two rules the interface enforces, both for the same reason — a slug has to survive being read aloud:
+
+- prefixes are unique, so two networks can never produce the same-looking URL
+- `l` is not allowed in a prefix, since `/bl1abc` is unreadable
+
+Some things deliberately do **not** change when you edit a channel:
+
+| Edit              | Effect                                                                                                   |
+| ----------------- | -------------------------------------------------------------------------------------------------------- |
+| Rename or re-icon | Relabels every statistic, history included — rows group by an internal id that never changes             |
+| Change prefix     | Applies only to slugs generated from then on; existing short links are never rewritten                   |
+| Delete            | Its links become unattributed. Links, slugs and every recorded click are kept, and you can reassign them |
 
 Channels are a dashboard concept: the JSON API neither accepts nor returns the field.
 
@@ -307,7 +331,7 @@ src/
   routes/           dashboard.ts (HTML), api.ts (JSON)
   views/            server-rendered pages, SVG charts, the stylesheet
   util/             crypto, URL validation, UA parsing, channels, rate limiting, QR
-tests/              106 tests: unit, storage, and end-to-end HTTP
+tests/              119 tests: unit, storage, and end-to-end HTTP
 deploy/             systemd unit, Caddyfile, Fedora installer, backup script
 ```
 
