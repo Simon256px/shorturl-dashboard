@@ -122,14 +122,32 @@ scrutiny:
 - The wrapper points at the **same destination** as the redirect, via a meta refresh and a real
   anchor. Sending crawlers elsewhere would be cloaking and would get the domain flagged; this
   doesn't.
-- It ships `noindex, nofollow`, so it never competes with the destination in search results.
+- It ships `noindex, nofollow` — addressed to Googlebot, Bingbot and Applebot by name rather than as
+  a blanket `robots` tag, because preview crawlers read that tag too and X drops the card when it
+  finds one. It never competes with the destination in search results either way: `robots.txt` keeps
+  search engines off the whole host.
 - Leave all three fields empty and nothing changes: the link redirects exactly as it did before.
   Existing links are untouched by the upgrade.
 
+`robots.txt` is `Disallow: /` for everyone **except** the preview agents, which get their own
+`Allow: /` group. X and LinkedIn obey `robots.txt` and will not fetch a wrapper they are told to
+skip — a blanket disallow means no card on those platforms, while Discord and Facebook, which ignore
+`robots.txt`, would still work and hide the problem. Naming them exposes nothing: a preview crawler
+only visits a slug it was handed, and no page here links to another, so the slug space stays
+unwalkable.
+
 Practical notes: use **https** for the image (many platforms silently drop `http` ones) and aim for
-**1200×630**. Crawlers cache hard — an edit can take minutes to appear, and a platform that already
-cached the old card may keep showing it until its own cache expires. Posting the link in a fresh
-Discord channel is the quickest way to see the current version.
+**1200×630** — X crops to 1.91:1, so a squarer image loses its top and bottom. Prefer PNG or JPEG;
+WebP is documented as supported and often is not, in practice. X also shows only the image, the
+title and the domain — the description is rendered by Discord and Slack, not by X, and the domain
+shown is the **shortener's**, since the wrapper answers `200` and the crawler never sees the
+destination.
+
+Crawlers cache hard — an edit can take minutes to appear, and a platform that already cached the old
+card may keep showing it until its own cache expires. X caches per URL for days and has retired its
+card validator, so the way to force a re-crawl is a URL it has not seen: append `?v=2`, which
+changes nothing about the routing. Posting the link in a fresh Discord channel is the quickest way
+to see the current version.
 
 The trade-off of the named-crawler list: a brand-new platform shows the destination's card until its
 agent is added. That is a missing card, never a broken link.

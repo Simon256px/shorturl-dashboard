@@ -65,7 +65,16 @@ export function openGraphPage(o: OgPageInput): Html {
 
     ${o.themeColor ? html`<meta name="theme-color" content="${o.themeColor}">` : ""}
     <link rel="canonical" href="${shortUrl}">
-    <meta name="robots" content="noindex, nofollow">
+
+    <!-- Named per engine rather than a blanket robots tag. The wrapper must
+        never be indexable — an indexed redirect stub is what doorway spam looks
+        like — but a generic noindex is also read by preview crawlers, and X is
+        reported to skip the card when it sees one. robots.txt already keeps
+        every search engine off the whole host; these are the belt to that
+        brace, and they say nothing to Twitterbot. -->
+    <meta name="googlebot" content="noindex, nofollow">
+    <meta name="bingbot" content="noindex, nofollow">
+    <meta name="applebot" content="noindex, nofollow">
 
     <!-- A human who lands here (a spoofed agent, a crawler that renders) must
         still reach the destination without needing JavaScript. -->

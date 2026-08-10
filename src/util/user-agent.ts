@@ -92,6 +92,45 @@ const SOCIAL_CRAWLER_PATTERNS = [
 ];
 
 /**
+ * The subset of the crawlers above that reads /robots.txt before the page.
+ *
+ * `Disallow: /` for everyone is the right default for a shortener, but X and
+ * LinkedIn honour it: they never fetch the wrapper, so a posted short link
+ * shows no preview at all. Discord and Facebook ignore robots.txt, which is
+ * why their embeds worked while X's did not.
+ *
+ * Naming them costs nothing in exposure. A preview crawler only ever visits a
+ * slug someone already handed it, and there is no page here linking to others,
+ * so the slug space stays unwalkable either way.
+ *
+ * Values are robots.txt product tokens; matching is case-insensitive.
+ */
+const ROBOTS_ALLOWED_CRAWLERS = [
+  "Twitterbot",
+  "facebookexternalhit",
+  "LinkedInBot",
+  "Slackbot",
+  "Slackbot-LinkExpanding",
+  "Applebot",
+  "Discordbot",
+  "TelegramBot",
+  "WhatsApp",
+  "redditbot",
+  "Pinterestbot",
+  "Mastodon",
+];
+
+/**
+ * A crawler obeys the most specific group that names it and ignores the rest,
+ * so the preview agents get `Allow: /` and everything else still gets the
+ * blanket `Disallow: /`.
+ */
+export function robotsTxt(): string {
+  const named = ROBOTS_ALLOWED_CRAWLERS.map((ua) => `User-agent: ${ua}`).join("\n");
+  return `${named}\nAllow: /\n\nUser-agent: *\nDisallow: /\n`;
+}
+
+/**
  * True when the request is a link-preview crawler, i.e. something that will
  * read Open Graph tags rather than navigate a human.
  */

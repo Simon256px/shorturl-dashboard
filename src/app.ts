@@ -22,7 +22,7 @@ import { sha256Hex } from "./util/crypto.ts";
 import { CSS } from "./views/assets.ts";
 import { errorPage, homePage, loginPage, type PageCtx } from "./views/pages.ts";
 import { openGraphPage } from "./views/opengraph.ts";
-import { isSocialCrawler } from "./util/user-agent.ts";
+import { isSocialCrawler, robotsTxt } from "./util/user-agent.ts";
 import { buildClick, clientIp, createLink, linkState } from "./service.ts";
 import { registerDashboard } from "./routes/dashboard.ts";
 import { registerApi } from "./routes/api.ts";
@@ -138,8 +138,9 @@ export function createApp(ctx: AppCtx): AppHono {
   app.get("/health", (c) => c.json({ status: "ok", uptime: Math.floor(performance.now() / 1000) }));
 
   // A shortener has nothing to index, and letting crawlers walk the slug space
-  // both pollutes analytics and leaks which links exist.
-  app.get("/robots.txt", (c) => c.text("User-agent: *\nDisallow: /\n"));
+  // both pollutes analytics and leaks which links exist. Link-preview agents
+  // are the exception: they have to reach the wrapper for a card to render.
+  app.get("/robots.txt", (c) => c.text(robotsTxt()));
 
   // --- Stylesheet ------------------------------------------------------------
   app.get("/assets/:file", (c) => {

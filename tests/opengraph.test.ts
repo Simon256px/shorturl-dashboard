@@ -164,8 +164,18 @@ Deno.test("the wrapper still sends a human to the destination", () => {
     '<meta http-equiv="refresh" content="0; url=https://ko-fi.com/simon256px">',
   );
   assertStringIncludes(out, 'href="https://ko-fi.com/simon256px"');
+});
+
+Deno.test("the wrapper is kept out of search results without muting the card", () => {
+  const out = renderCard();
   // It must never become indexable — that is what would look like doorway spam.
-  assertStringIncludes(out, '<meta name="robots" content="noindex, nofollow">');
+  assertStringIncludes(out, '<meta name="googlebot" content="noindex, nofollow">');
+  assertStringIncludes(out, '<meta name="bingbot" content="noindex, nofollow">');
+  assertStringIncludes(out, '<meta name="applebot" content="noindex, nofollow">');
+
+  // But never as a blanket directive: preview crawlers read `robots` too, and
+  // X is reported to drop the card when it finds one.
+  assertFalse(out.includes('name="robots"'));
 });
 
 Deno.test("a card with no image falls back to the small twitter card", () => {

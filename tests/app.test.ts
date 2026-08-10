@@ -69,7 +69,28 @@ Deno.test("robots.txt tells crawlers to stay out", async () => {
   const { call, store } = harness();
   try {
     const body = await (await call("/robots.txt")).text();
-    assertStringIncludes(body, "Disallow: /");
+    assertStringIncludes(body, "User-agent: *\nDisallow: /");
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("robots.txt lets preview crawlers through, in their own group", async () => {
+  const { call, store } = harness();
+  try {
+    const body = await (await call("/robots.txt")).text();
+    // X and LinkedIn honour robots.txt: blocked here means no card anywhere.
+    assertStringIncludes(body, "User-agent: Twitterbot");
+    assertStringIncludes(body, "User-agent: LinkedInBot");
+
+    // The Allow has to sit in the group naming the crawlers, before the
+    // catch-all — a crawler obeys one group and ignores the others.
+    const groups = body.split("User-agent: *");
+    assertEquals(groups.length, 2, "exactly one catch-all group");
+    const [allowed, everyoneElse] = groups as [string, string];
+    assertStringIncludes(allowed, "Allow: /");
+    assertFalse(allowed.includes("Disallow: /"));
+    assertStringIncludes(everyoneElse, "Disallow: /");
   } finally {
     store.close();
   }
