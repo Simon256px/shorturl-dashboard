@@ -1,265 +1,116 @@
 # shorturl-dashboard
 
-A self-hosted URL shortener with an analytics dashboard and a Discord message that keeps itself up
-to date.
+[![CI](https://github.com/Simon256px/shorturl-dashboard/actions/workflows/ci.yml/badge.svg)](https://github.com/Simon256px/shorturl-dashboard/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Deno 2](https://img.shields.io/badge/deno-2.x-black?logo=deno)](https://deno.com)
+[![Ko-fi](https://img.shields.io/badge/support-Ko--fi-ff5e5b?logo=ko-fi&logoColor=white)](https://ko-fi.com/simon256px)
 
-Built on Deno 2 + Hono + SQLite. One process, one database file, two dependencies. No build step, no
-client-side JavaScript, no Redis, no Postgres.
+A self-hosted URL shortener with a privacy-respecting analytics dashboard, per-link social cards,
+and a Discord message that keeps itself up to date.
+
+One process, one SQLite file, two dependencies. No build step, no client-side JavaScript, no Redis,
+no Postgres.
 
 ```
 ┌──────────┐   302    ┌──────────────┐   batched writes   ┌────────────┐
 │ visitor  │ ───────▶ │   Deno app   │ ─────────────────▶ │ SQLite/WAL │
 └──────────┘          │  Hono router │                    └────────────┘
                       └──────┬───────┘                           │
-                             │ PATCH the same message            │ read
-                             ▼  every 5 min                      ▼
+                             │ edits the same message            │ read
+                             ▼  on a timer                       ▼
                       ┌──────────────┐                    ┌────────────┐
                       │   Discord    │                    │  dashboard │
                       └──────────────┘                    └────────────┘
 ```
 
+**Contents** — [Features](#features) · [Quick start](#quick-start) · [Configuration](#configuration)
+· [Deploying](#deploying-on-fedora) · [Social cards](#social-cards) · [Channels](#channels) ·
+[Discord](#discord) · [API](#api) · [Security & privacy](#security--privacy) ·
+[Development](#development) · [Contributing](#contributing) · [License](#license)
+
 ## Features
 
-- **Shortening** — random slugs from a CSPRNG, or your own custom slug
+- **Short links** — random slugs from a CSPRNG, or a custom slug of your choosing
 - **Analytics** — clicks, unique visitors, referrers, countries, browsers, OS, device type, daily
-  and hourly time series
-- **Channels** — tag a link with where you published it, get per-network stats, and see when the
-  referrers disagree. The network list is yours to edit
-- **Dashboard** — server-rendered, dark/light, works without JavaScript
-- **Social cards** — per-link Open Graph title, description and image, so a short link shows _your_
-  preview on Discord, X, Slack and the rest
-- **Discord** — a single embed message edited in place, never spammed
-- **QR codes** — SVG, generated server-side, scale to print
-- **Expiry & disable** — per-link, enforced on redirect
-- **CSV export** — per link or everything
-- **JSON API** — with revocable API keys
-- **Privacy by default** — no cookies for visitors, no IP addresses stored
-
-## Why this stack
-
-| Choice                         | Reason                                                                                                                                                                                                                                                                             |
-| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Deno 2**                     | Permissions are enforced by the runtime, not by convention. The process is launched with `--allow-read=/var/lib/shorturl` and physically cannot read your SSH keys, whatever a dependency tries. Also: TypeScript with no build step, and `deno compile` yields one static binary. |
-| **SQLite (WAL)**               | A shortener is read-heavy with tiny rows. SQLite does hundreds of thousands of redirects per second on one core, has no daemon to patch, and backs up with one command. Postgres here would be a second thing to keep alive for no gain.                                           |
-| **Hono**                       | ~14 kB router, and portable across Deno/Node/Bun — if Deno ever stops suiting you, the app moves without a rewrite.                                                                                                                                                                |
-| **Discord webhook, not a bot** | No bot token to leak, no gateway socket to keep alive, no privileged intents. If the process dies, the next tick simply edits the message again.                                                                                                                                   |
-| **No client JavaScript**       | Lets the app ship `script-src 'none'` in its CSP, which removes XSS as a _category_ rather than as a bug to hunt. Charts are inline SVG.                                                                                                                                           |
-
-Total third-party code: `hono` and `qrcode-generator`. Everything else — password hashing, rate
-limiting, User-Agent parsing, QR rendering, CSV — is in `src/` where you can read it.
+  and hourly charts
+- **Channels** — tag a link with where you posted it and compare what you declared with what the
+  referrers say; the network list is yours to edit
+- **Social cards** — a per-link Open Graph title, description and image, so the short link shows
+  _your_ preview on Discord, X, Slack and the rest
+- **Discord** — one embed message edited in place, never a stream of posts
+- **QR codes** — SVG, generated server-side, sharp at any print size
+- **Expiry and disable** — per link, enforced at redirect time
+- **CSV export** — per link, or everything at once
+- **JSON API** — authenticated with revocable API keys
+- **Private by default** — no cookies for visitors, no IP addresses on disk
 
 ## Quick start
 
+You need [Deno 2](https://docs.deno.com/runtime/getting_started/installation/).
+
 ```bash
-deno task hash-password
+git clone https://github.com/Simon256px/shorturl-dashboard.git
+```
+
+```bash
+cd shorturl-dashboard
 ```
 
 ```bash
 cp .env.example .env
 ```
 
-Put the printed `ADMIN_PASSWORD_HASH` into `.env`, then:
+```bash
+deno task hash-password
+```
+
+Paste the printed `ADMIN_PASSWORD_HASH=...` line into `.env`, then:
 
 ```bash
 deno task start
 ```
 
-Open <http://localhost:8000/dashboard>.
-
-Other tasks:
-
-```bash
-deno task dev
-```
-
-```bash
-deno task test
-```
-
-```bash
-deno task check
-```
+Open <http://localhost:8000/dashboard> and sign in. Data lives in `./data`.
 
 ## Configuration
 
-Everything comes from the environment (or `.env`). See [`.env.example`](.env.example) for the
-annotated list. The ones that matter:
+Everything comes from the environment or `.env`. [`.env.example`](.env.example) is the annotated
+reference; these are the settings that matter:
 
 | Variable                          | Default                 | Notes                                                                            |
 | --------------------------------- | ----------------------- | -------------------------------------------------------------------------------- |
-| `BASE_URL`                        | `http://localhost:8000` | Public origin. Used for short links, QR payloads and the CSRF origin check.      |
+| `BASE_URL`                        | `http://localhost:8000` | Public origin. Used for short links, QR codes and the CSRF origin check.         |
 | `HOST` / `PORT`                   | `127.0.0.1` / `8000`    | Keep on loopback behind a reverse proxy.                                         |
-| `ADMIN_PASSWORD_HASH`             | —                       | From `deno task hash-password`. Preferred over `ADMIN_PASSWORD`.                 |
-| `TRUST_PROXY`                     | `false`                 | Turn on **only** behind a proxy you control. See below.                          |
-| `PUBLIC_SHORTENING`               | `false`                 | Let anonymous visitors create links.                                             |
-| `ALLOW_PRIVATE_TARGETS`           | `false`                 | Permit shortening to RFC1918 / loopback addresses.                               |
+| `ADMIN_PASSWORD_HASH`             | —                       | From `deno task hash-password`. Preferred over `ADMIN_PASSWORD` (min. 12 chars). |
+| `SESSION_TTL_HOURS`               | `168`                   | How long a dashboard login lasts.                                                |
+| `TRUST_PROXY`                     | `false`                 | Read `X-Forwarded-For`. Turn on **only** behind a proxy you control — see below. |
+| `PUBLIC_SHORTENING`               | `false`                 | Let anonymous visitors create links from the home page.                          |
+| `ALLOW_PRIVATE_TARGETS`           | `false`                 | Allow destinations on loopback, RFC1918 and link-local addresses.                |
 | `REDIRECT_STATUS`                 | `302`                   | `301`/`308` are cached by browsers forever, which silently stops your analytics. |
-| `ANALYTICS_RETENTION_DAYS`        | `400`                   | `0` keeps click rows forever.                                                    |
-| `DISCORD_WEBHOOK_URL`             | —                       | Empty disables the reporter.                                                     |
-| `DISCORD_UPDATE_INTERVAL_SECONDS` | `300`                   | Minimum 60.                                                                      |
+| `ANALYTICS_RETENTION_DAYS`        | `400`                   | Click rows older than this are purged nightly. `0` keeps them forever.           |
+| `DISCORD_WEBHOOK_URL`             | —                       | Empty disables the Discord reporter.                                             |
+| `DISCORD_UPDATE_INTERVAL_SECONDS` | `300`                   | Seconds between edits, 60 minimum. `.env.example` suggests `3600`.               |
 
-### About `TRUST_PROXY`
+The configuration is validated at boot: a bad value stops the server with a message naming the
+variable, rather than misbehaving under traffic.
 
-`X-Forwarded-For` is a header — anyone can send one. It is read **only** when `TRUST_PROXY=true`,
-because trusting it unconditionally would let a visitor spoof their address and thereby defeat both
-rate limiting and unique-visitor counting. Set it to `true` when, and only when, a proxy in front of
-the app overwrites that header.
-
-## Social cards
-
-Fill **Card title**, **Card description** and **Card image URL** on a link, and sharing that short
-link shows your own preview instead of the destination's.
-
-How it works: a `302` carries no body, so a preview crawler following a short link reads the
-_destination's_ Open Graph tags. To show a card of our own the crawler has to receive HTML — so when
-a link has card data **and** the caller matches the named crawler list in
-[`src/util/user-agent.ts`](src/util/user-agent.ts), it gets an HTML wrapper instead of a redirect.
-Everyone else — every human, every script, every uptime monitor — keeps getting the plain `302`.
-
-Three properties worth stating plainly, because "serve crawlers something different" deserves
-scrutiny:
-
-- The wrapper points at the **same destination** as the redirect, via a meta refresh and a real
-  anchor. Sending crawlers elsewhere would be cloaking and would get the domain flagged; this
-  doesn't.
-- It ships `noindex, nofollow` — addressed to Googlebot, Bingbot and Applebot by name rather than as
-  a blanket `robots` tag, because preview crawlers read that tag too and X drops the card when it
-  finds one. It never competes with the destination in search results either way: `robots.txt` keeps
-  search engines off the whole host.
-- Leave all three fields empty and nothing changes: the link redirects exactly as it did before.
-  Existing links are untouched by the upgrade.
-
-`robots.txt` is `Disallow: /` for everyone **except** the preview agents, which get their own
-`Allow: /` group. X and LinkedIn obey `robots.txt` and will not fetch a wrapper they are told to
-skip — a blanket disallow means no card on those platforms, while Discord and Facebook, which ignore
-`robots.txt`, would still work and hide the problem. Naming them exposes nothing: a preview crawler
-only visits a slug it was handed, and no page here links to another, so the slug space stays
-unwalkable.
-
-Practical notes: use **https** for the image (many platforms silently drop `http` ones) and aim for
-**1200×630** — X crops to 1.91:1, so a squarer image loses its top and bottom. Prefer PNG or JPEG;
-WebP is documented as supported and often is not, in practice. X also shows only the image, the
-title and the domain — the description is rendered by Discord and Slack, not by X, and the domain
-shown is the **shortener's**, since the wrapper answers `200` and the crawler never sees the
-destination.
-
-Crawlers cache hard — an edit can take minutes to appear, and a platform that already cached the old
-card may keep showing it until its own cache expires. X caches per URL for days and has retired its
-card validator, so the way to force a re-crawl is a URL it has not seen: append `?v=2`, which
-changes nothing about the routing. Posting the link in a fresh Discord channel is the quickest way
-to see the current version.
-
-The trade-off of the named-crawler list: a brand-new platform shows the destination's card until its
-agent is added. That is a missing card, never a broken link.
-
-## Channels
-
-Pick a channel when you create a link and you get per-network numbers on the dashboard, plus a
-prefixed slug so the URL says where it went: Twitter yields `/twA8f3k`, YouTube `/ytQ7bnx`. The
-prefix is cosmetic — the random part keeps its full 7 characters, so a prefixed slug is exactly as
-unguessable as a plain one. A custom slug is never rewritten.
-
-The dashboard reports two columns side by side, and they are **not** the same measurement:
-
-|              | Comes from                         | Reliability                      |
-| ------------ | ---------------------------------- | -------------------------------- |
-| **Declared** | the channel you picked on the link | exact — it is your own statement |
-| **Detected** | the `Referer` header on each click | partial, and unevenly so         |
-
-Detected always reads low. Twitter rewrites links through `t.co`, and its mobile apps — like most
-native apps — send no `Referer` at all, so those clicks are unattributable by construction. That is
-why declaring the channel exists: it is the only figure you can plan against.
-
-The comparison earns its keep in one specific case. A network appearing under _detected_ that you
-never declared means the link is being shared somewhere you did not put it. Each link's page states
-this in a sentence, e.g. _20 % of referred clicks came from another network — probably reshared._ A
-low detected count on its own is the normal case and means nothing.
-
-### Editing the list
-
-Twelve networks ship by default — X/Twitter, YouTube, Discord, Instagram, GitHub, TikTok, Pinterest,
-LinkedIn, Reddit, Facebook, Newsletter, Website/blog. They are ordinary rows in the `channels`
-table, seeded on first run and **not** privileged afterwards: rename, re-prefix, re-icon or delete
-any of them under **Settings → Channels**, and add your own.
-
-A channel needs a name, a 2–3 letter prefix and an icon. Referrer hosts are optional — without them
-the channel still works, you just get no declared-versus-detected comparison for it. Paste what you
-have; `https://www.twitch.tv/videos/1` is stored as `twitch.tv`, and subdomains match automatically.
-
-Two rules the interface enforces, both for the same reason — a slug has to survive being read aloud:
-
-- prefixes are unique, so two networks can never produce the same-looking URL
-- `l` is not allowed in a prefix, since `/bl1abc` is unreadable
-
-Some things deliberately do **not** change when you edit a channel:
-
-| Edit              | Effect                                                                                                   |
-| ----------------- | -------------------------------------------------------------------------------------------------------- |
-| Rename or re-icon | Relabels every statistic, history included — rows group by an internal id that never changes             |
-| Change prefix     | Applies only to slugs generated from then on; existing short links are never rewritten                   |
-| Delete            | Its links become unattributed. Links, slugs and every recorded click are kept, and you can reassign them |
-
-Channels are a dashboard concept: the JSON API neither accepts nor returns the field.
-
-## Discord
-
-Create a webhook in **Server Settings → Integrations → Webhooks**, copy the URL into
-`DISCORD_WEBHOOK_URL`, restart.
-
-On first run the app posts one embed and remembers its message id; from then on it edits that same
-message. Delete the message in Discord and it posts a fresh one on the next tick. Change the webhook
-URL and it starts over in the new channel.
-
-The embed carries total/24 h/7 d clicks and visitors, link counts, top links, top referrers, top
-countries, and a 24-hour Unicode sparkline. Failures are logged and retried on the next tick —
-Discord being down never affects redirects.
-
-Force a refresh (e.g. from CI after a deploy):
-
-```bash
-curl -X POST -H "Authorization: Bearer $API_KEY" https://s.example.com/api/discord/refresh
-```
-
-## API
-
-Create a key under **Settings** in the dashboard. It is shown once.
-
-```bash
-curl -X POST https://s.example.com/api/links -H "Authorization: Bearer sud_..." -H "Content-Type: application/json" -d '{"target":"https://example.com/page","slug":"launch","note":"newsletter"}'
-```
-
-Card fields go in the same body — `og_title`, `og_description`, `og_image`:
-
-```bash
-curl -X POST https://s.example.com/api/links -H "Authorization: Bearer sud_..." -H "Content-Type: application/json" -d '{"target":"https://ko-fi.com/you","slug":"kofi","og_title":"Support my work","og_description":"Every coffee helps.","og_image":"https://example.com/card.png"}'
-```
-
-On `PATCH`, an absent card key is left alone and an explicit `null` clears it — so updating the
-target never disturbs the card, and `{"og_image":null}` drops just the image.
-
-| Method   | Path                          | Purpose                                       |
-| -------- | ----------------------------- | --------------------------------------------- |
-| `GET`    | `/api/links`                  | List (`?q=`, `?limit=`, `?offset=`, `?sort=`) |
-| `POST`   | `/api/links`                  | Create                                        |
-| `GET`    | `/api/links/:slug`            | One link plus its stats                       |
-| `PATCH`  | `/api/links/:slug`            | Update target, note, expiry, disabled         |
-| `DELETE` | `/api/links/:slug`            | Delete link and its clicks                    |
-| `GET`    | `/api/links/:slug/clicks.csv` | Raw click export                              |
-| `GET`    | `/api/stats`                  | Global stats                                  |
-| `POST`   | `/api/discord/refresh`        | Publish the Discord embed now                 |
-| `GET`    | `/health`                     | Liveness, no auth                             |
+**About `TRUST_PROXY`.** `X-Forwarded-For` is just a header, and anyone can send one. Trusting it
+unconditionally would let a visitor pick their own IP and slip past both rate limiting and
+unique-visitor counting. Set it to `true` when, and only when, a proxy in front of the app
+overwrites that header.
 
 ## Deploying on Fedora
+
+The installer targets Fedora, RHEL and CentOS Stream. From a clone of the repository:
 
 ```bash
 sudo ./deploy/install-fedora.sh
 ```
 
-That compiles a static binary to `/usr/local/bin/shorturl`, writes `/etc/shorturl/shorturl.env`,
-installs a hardened systemd unit, sets the SELinux boolean the reverse proxy needs, and opens 80/443
-in firewalld.
-
-Then:
+It compiles a self-contained binary to `/usr/local/bin/shorturl`, writes
+`/etc/shorturl/shorturl.env`, installs a hardened systemd unit, sets the SELinux boolean the reverse
+proxy needs and opens ports 80/443 in firewalld. It is idempotent, so re-running it upgrades an
+existing install. Then:
 
 ```bash
 sudo systemctl enable --now shorturl
@@ -267,103 +118,240 @@ sudo systemctl enable --now shorturl
 
 Put Caddy in front for automatic TLS — see [`deploy/Caddyfile`](deploy/Caddyfile).
 
-The unit runs under `DynamicUser=yes` with `ProtectSystem=strict`, an empty capability set,
-`SystemCallFilter=@system-service` and write access to nothing but `/var/lib/shorturl`.
-`MemoryDenyWriteExecute` is deliberately left off: V8's JIT needs W+X pages and the process will not
-start with it enabled.
+The unit runs under `DynamicUser=yes` and `ProtectSystem=strict`, with no capabilities,
+`SystemCallFilter=@system-service`, and write access to nothing but `/var/lib/shorturl`. On top of
+that, Deno's permissions are compiled into the binary: the process cannot read outside its data
+directory even if the unit file is later edited. `MemoryDenyWriteExecute` is deliberately left off,
+because V8's JIT needs W+X pages and the process will not start with it.
 
-Backups:
+**Backups** use SQLite's online backup API, so they are consistent without stopping the service:
 
 ```bash
 sudo ./deploy/backup.sh /var/backups/shorturl
 ```
 
-Uses SQLite's online backup API, so it is consistent without stopping the service. Wire it to a
-systemd timer or cron.
+Run it from a systemd timer or cron.
 
-## Security notes
+## Social cards
 
-What the app does, and why:
+Fill **Card title**, **Card description** and **Card image URL** on a link, and sharing the short
+link shows your preview instead of the destination's.
 
-- **Passwords** — scrypt (N=2¹⁵, r=8), 16-byte random salt, constant-time compare. A tampered hash
-  string with an absurd work factor is rejected rather than honoured, so it can't be turned into a
-  memory bomb.
-- **Sessions** — 32 random bytes; only the SHA-256 is stored, so a leaked database backup hands over
-  no live sessions. Cookies are `HttpOnly`, `SameSite=Lax`, and `Secure` whenever `BASE_URL` is
-  https.
-- **CSRF** — every cookie-authenticated write checks the `Origin` header (falling back to
-  `Referer`). API-key requests are exempt: browsers never attach an `Authorization` header
-  cross-origin without a preflight.
-- **Open-redirect abuse** — targets are restricted to `http`/`https`, may not embed credentials, and
-  by default may not point at loopback, RFC1918, link-local (including `169.254.169.254`), CGNAT or
-  multicast addresses. That last rule is what stops your shortener being used to CSRF someone's
-  router.
-- **Slugs** — rejection-sampled from a CSPRNG over a 58-character alphabet, so they are neither
-  guessable nor enumerable.
-- **Rate limits** — login 8/15 min, link creation 60/h, API 240/min, redirects 600/min, all per IP.
-- **CSP** — `default-src 'none'; script-src` absent entirely; no inline styles. The one exception is
-  the link detail page when a card image is set: `img-src` widens to `https:` so the image can be
-  previewed. `script-src` stays absent, so the image still cannot execute anything — the residual
-  cost is that the image host learns the admin opened that page.
-- **Social cards** — the title and description are user-controlled text emitted into `content="…"`
-  attributes, so they are HTML-escaped; a test asserts a `"><script>` payload cannot break out. The
-  image URL goes through the same scheme allowlist as a destination, which rules out `javascript:`
-  and `data:` in a meta tag.
+A `302` has no body, so a preview crawler that follows a short link normally reads the
+_destination's_ Open Graph tags. To show a card of our own, the crawler has to receive HTML. When a
+link has card data **and** the request comes from a known preview crawler (listed in
+[`src/util/user-agent.ts`](src/util/user-agent.ts)), the app answers with a small HTML page instead
+of a redirect. Everyone else — people, scripts, uptime monitors — still gets the plain `302`.
+
+"Serve crawlers something different" deserves scrutiny, so here is what keeps it honest:
+
+- The HTML page points at the **same destination** as the redirect, with a meta refresh and a plain
+  link. Sending crawlers somewhere else would be cloaking, and would get the domain flagged.
+- It carries `noindex, nofollow` addressed to Googlebot, Bingbot and Applebot by name. A blanket
+  `robots` meta tag would also be read by preview crawlers, and X drops the card when it sees one.
+- With all three fields empty, nothing changes: the link redirects exactly as before.
+
+`robots.txt` disallows the whole host **except** for the preview crawlers, which get their own
+`Allow: /` group. X and LinkedIn obey `robots.txt` and would otherwise never fetch the card, while
+Discord and Facebook ignore it and would hide the problem. Allowing them exposes nothing: a crawler
+only visits a slug it was handed, and no page links to another.
+
+**Tips**
+
+- Use an **https** image (many platforms drop `http` ones), ideally **1200×630**. X crops to 1.91:1.
+  Prefer PNG or JPEG; WebP support is patchy in practice.
+- X shows the image, the title and the shortener's domain — not the description, which Discord and
+  Slack do show.
+- Platforms cache cards aggressively, X for days. To force a fresh fetch, share a URL they have not
+  seen yet: appending `?v=2` changes nothing about the routing. A fresh Discord channel is the
+  quickest way to preview the current card.
+- A platform whose crawler is not on the list yet shows the destination's card. That is a missing
+  card, never a broken link.
+
+## Channels
+
+Pick a channel when you create a link and the dashboard reports per-network numbers. The slug gets a
+prefix so the URL says where it went — X/Twitter gives `/twA8f3k`, YouTube `/ytQ7bnx`. The random
+part keeps its full 7 characters, so a prefixed slug is exactly as hard to guess as a plain one. A
+custom slug is never rewritten.
+
+The dashboard shows two figures side by side, and they measure different things:
+
+|              | Comes from                         | Reliability                      |
+| ------------ | ---------------------------------- | -------------------------------- |
+| **Declared** | the channel you picked on the link | exact — it is your own statement |
+| **Detected** | the `Referer` header on each click | partial, and unevenly so         |
+
+Detected always reads low: X routes links through `t.co`, and most native apps send no `Referer` at
+all. That is why declaring the channel exists — it is the figure you can plan against.
+
+The comparison pays off in one case: a network showing up under _detected_ that you never declared
+means the link is being shared somewhere you did not post it. The link's page says so, e.g. _20 % of
+referred clicks came from another network — probably reshared._
+
+### Editing the list
+
+Twelve networks ship by default: X/Twitter, YouTube, Discord, Instagram, GitHub, TikTok, Pinterest,
+LinkedIn, Reddit, Facebook, Newsletter and Website/blog. They are ordinary rows, seeded on first
+run: rename, re-prefix, re-icon or delete any of them under **Settings → Channels**, and add your
+own.
+
+A channel needs a name, a 2–3 letter prefix and an icon. Referrer hosts are optional — without them
+you just lose the declared-vs-detected comparison. Paste whatever you have:
+`https://www.twitch.tv/videos/1` is stored as `twitch.tv`, and subdomains match automatically.
+Prefixes must be unique, and may not contain `l` (`/bl1abc` is unreadable aloud).
+
+| Edit              | Effect                                                                           |
+| ----------------- | -------------------------------------------------------------------------------- |
+| Rename or re-icon | Relabels every statistic, history included                                       |
+| Change prefix     | Applies to new slugs only; existing short links are never rewritten              |
+| Delete            | Its links become unattributed; links, slugs and clicks are kept and reassignable |
+
+Channels are a dashboard feature: the JSON API neither accepts nor returns them.
+
+## Discord
+
+Create a webhook under **Server Settings → Integrations → Webhooks**, put its URL in
+`DISCORD_WEBHOOK_URL`, and restart.
+
+On first run the app posts one embed and remembers its id; from then on it edits that same message.
+Delete it in Discord and a fresh one is posted on the next tick; change the webhook URL and it
+starts over in the new channel. The embed shows total, 24 h and 7 d clicks and visitors, link
+counts, top links, referrers and countries, and a 24-hour sparkline.
+
+Failures are logged and retried on the next tick. Discord being down never affects redirects.
+
+A webhook rather than a bot means no bot token to leak, no gateway connection to keep alive and no
+privileged intents.
+
+## API
+
+Create a key under **Settings** in the dashboard — it is shown once — and send it as a bearer token.
+
+```bash
+curl -X POST https://s.example.com/api/links -H "Authorization: Bearer sud_..." -H "Content-Type: application/json" -d '{"target":"https://example.com/page","slug":"launch","note":"newsletter","expires":"2027-01-31"}'
+```
+
+Request body fields: `target` (required), `slug`, `note`, `expires` (`YYYY-MM-DD`, or `expires_at`
+as a Unix timestamp), and the card fields `og_title`, `og_description`, `og_image`. `PATCH` also
+accepts `disabled`. On `PATCH`, an absent key is left alone and an explicit `null` clears it, so
+`{"og_image":null}` drops only the image.
+
+| Method   | Path                          | Purpose                                                |
+| -------- | ----------------------------- | ------------------------------------------------------ |
+| `GET`    | `/api/links`                  | List (`?q=`, `?limit=`, `?offset=`, `?sort=`)          |
+| `POST`   | `/api/links`                  | Create                                                 |
+| `GET`    | `/api/links/:slug`            | One link with its stats                                |
+| `PATCH`  | `/api/links/:slug`            | Update target, note, expiry, disabled flag or card     |
+| `DELETE` | `/api/links/:slug`            | Delete a link and its clicks                           |
+| `GET`    | `/api/links/:slug/clicks.csv` | Raw click export                                       |
+| `GET`    | `/api/stats`                  | Global stats                                           |
+| `POST`   | `/api/discord/refresh`        | Publish the Discord embed now (e.g. from a deploy job) |
+| `GET`    | `/health`                     | Liveness check, no auth                                |
+
+## Security & privacy
+
+**Authentication**
+
+- **Passwords** — scrypt (N=2¹⁵, r=8) with a 16-byte salt and a constant-time compare. A tampered
+  hash with an absurd work factor is rejected, so it cannot be turned into a memory bomb.
+- **Sessions** — 32 random bytes, of which only the SHA-256 is stored: a leaked backup contains no
+  live sessions. Cookies are `HttpOnly`, `SameSite=Lax`, and `Secure` whenever `BASE_URL` is https.
+- **CSRF** — every cookie-authenticated write checks `Origin` (falling back to `Referer`). API-key
+  requests are exempt, since browsers never attach `Authorization` cross-origin without a preflight.
+- **Rate limits** per IP — login 8 per 15 min, link creation 60/h, API 240/min, redirects 600/min.
+
+**Abuse resistance**
+
+- **Destinations** must be `http`/`https`, may not embed credentials, and by default may not point
+  at loopback, RFC1918, link-local (including `169.254.169.254`), CGNAT or multicast addresses — so
+  the shortener cannot be used to attack someone's router.
+- **Slugs** are rejection-sampled from a CSPRNG over a 58-character alphabet (no `0`/`O`/`I`/`l`):
+  neither guessable nor enumerable.
+- **CSV exports** prefix cells starting with `=`, `+`, `-` or `@`, so a hostile referrer cannot run
+  a formula when the file is opened in a spreadsheet.
+
+**Browser hardening**
+
+- **No client JavaScript**, so the CSP has no `script-src` at all and XSS is ruled out as a
+  category. Charts are inline SVG. The one CSP relaxation: when a link has a card image, its detail
+  page allows `img-src https:` so the image can be previewed.
+- **Card fields** are HTML-escaped (a test checks that a `"><script>` payload cannot break out), and
+  the image URL goes through the same scheme check as destinations, ruling out `javascript:` and
+  `data:`.
 - **Headers** — `nosniff`, `X-Frame-Options: DENY`, HSTS on https, and
-  `Referrer-Policy: no-referrer` on the redirect so the destination never learns which short link
-  (or campaign) sent the visitor.
-- **CSV export** — cells beginning `=`, `+`, `-` or `@` are prefixed with an apostrophe, so a
-  hostile referrer string cannot execute when the export is opened in Excel.
+  `Referrer-Policy: no-referrer` on redirects so the destination never learns which short link sent
+  the visitor.
 
-### Privacy
+**Privacy**
 
-No cookie is ever set on a visitor. No IP address is written to disk.
+- No cookie is ever set on a visitor, and no IP address is written to disk.
+- Unique visitors are `sha256(daily_salt || ip || user_agent)`, truncated. The salt is regenerated
+  every UTC day and the old one deleted, after which yesterday's visitors cannot be linked to
+  today's or to anyone.
+- Referrers are stored as a bare hostname: full URLs often carry tokens and personal data.
+- Country comes from a CDN header (`CF-IPCountry` and similar) when present, otherwise from the
+  `Accept-Language` region. No GeoIP database ships with the app.
+- A link's **total clicks** is a lifetime counter that survives the retention purge, while **unique
+  visitors** only covers the retention window — counting lifetime uniques would mean keeping every
+  click row forever, which is what retention exists to avoid.
 
-Unique visitors are counted as `sha256(daily_salt || ip || user_agent)` truncated to 16 hex
-characters. The salt is 32 random bytes, regenerated every UTC day, and old salts are deleted by the
-nightly maintenance pass. Once yesterday's salt is gone, yesterday's visitor ids cannot be linked to
-today's or back to any person — which is the point.
+## Development
 
-Referrers are stored as a bare hostname, never the full URL: referring pages routinely carry session
-tokens and personal data in their query strings.
+| Task                | Does                                       |
+| ------------------- | ------------------------------------------ |
+| `deno task dev`     | Run with file watching                     |
+| `deno task test`    | Run the 121 tests (unit, storage, HTTP)    |
+| `deno task check`   | Type check, lint and format check, like CI |
+| `deno task fmt`     | Format the code                            |
+| `deno task compile` | Build a standalone binary into `dist/`     |
 
-Country is taken from a GeoIP header set by your CDN/proxy (`CF-IPCountry` and friends) if present,
-otherwise guessed from the `Accept-Language` region subtag. No GeoIP database ships with the app.
+Windows works for development as-is; the shutdown handler listens for `SIGINT`/`SIGBREAK` there,
+since `SIGTERM` does not exist.
 
-One asymmetry worth knowing: a link's **total clicks** comes from a lifetime counter and survives
-the retention purge, while **unique visitors** is computed over the retained click rows and
-therefore only covers the retention window. Counting lifetime uniques would require keeping every
-click row forever, which is exactly what retention exists to avoid.
+<details>
+<summary><strong>Why this stack</strong></summary>
 
-## Project layout
+| Choice           | Reason                                                                                                                                                                                                       |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Deno 2**       | Permissions are enforced by the runtime. Launched with `--allow-read=/var/lib/shorturl`, the process cannot read your SSH keys whatever a dependency tries. TypeScript without a build step, and one binary. |
+| **SQLite (WAL)** | A shortener is read-heavy with tiny rows. SQLite handles that on one core, has no daemon to patch, and backs up with one command. Postgres would be a second service to keep alive for no gain.              |
+| **Hono**         | A ~14 kB router, portable across Deno, Node and Bun — if Deno stops suiting you, the app moves without a rewrite.                                                                                            |
+
+The only third-party code is `hono` and `qrcode-generator`. Password hashing, rate limiting,
+User-Agent parsing, QR rendering and CSV are all in `src/`, where you can read them.
+
+</details>
+
+<details>
+<summary><strong>Project layout</strong></summary>
 
 ```
 src/
-  main.ts           bootstrap, graceful shutdown, maintenance loop
-  app.ts            middleware, routing, security headers
-  config.ts         environment parsing, validated at boot
-  db.ts             SQLite schema, migrations, queries, batched click writes
-  service.ts        link creation/validation shared by dashboard and API
-  auth.ts           sessions, API keys, CSRF
-  discord.ts        the self-editing webhook message
-  routes/           dashboard.ts (HTML), api.ts (JSON)
-  views/            server-rendered pages, SVG charts, the stylesheet
-  util/             crypto, URL validation, UA parsing, channels, rate limiting, QR
-tests/              119 tests: unit, storage, and end-to-end HTTP
-deploy/             systemd unit, Caddyfile, Fedora installer, backup script
+  main.ts       bootstrap, graceful shutdown, maintenance loop
+  app.ts        middleware, routing, security headers
+  config.ts     environment parsing, validated at boot
+  db.ts         SQLite schema, migrations, queries, batched click writes
+  service.ts    link creation and validation shared by dashboard and API
+  auth.ts       sessions, API keys, CSRF
+  discord.ts    the self-editing webhook message
+  routes/       dashboard.ts (HTML), api.ts (JSON)
+  views/        server-rendered pages, SVG charts, Open Graph wrapper, stylesheet
+  util/         crypto, URL validation, UA parsing, channels, rate limiting, QR
+tests/          unit, storage and end-to-end HTTP tests
+scripts/        hash-password.ts
+deploy/         systemd unit, Caddyfile, Fedora installer, backup script
 ```
 
-## Running on Windows
+</details>
 
-Works as-is for development:
+## Contributing
 
-```bash
-deno task start
-```
+Bug reports, ideas and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Please
+report security issues privately rather than in a public issue.
 
-`SIGTERM` doesn't exist on Windows, so the shutdown handler listens for `SIGINT`/`SIGBREAK` there
-and `SIGINT`/`SIGTERM` elsewhere.
+If the project is useful to you, you can [buy me a coffee on Ko-fi](https://ko-fi.com/simon256px).
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+[MIT](LICENSE) © Simon256px
