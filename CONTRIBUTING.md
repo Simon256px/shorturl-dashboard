@@ -94,3 +94,8 @@ stated in the pull request.
 ## License
 
 By contributing, you agree that your contributions are licensed under the [MIT License](LICENSE).
+
+## Support
+
+No time to contribute? You can also support the project at
+[ko-fi.com/simon256px](https://ko-fi.com/simon256px).

@@ -1,9 +1,6 @@
 # shorturl-dashboard
 
-[![CI](https://github.com/Simon256px/shorturl-dashboard/actions/workflows/ci.yml/badge.svg)](https://github.com/Simon256px/shorturl-dashboard/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Deno 2](https://img.shields.io/badge/deno-2.x-black?logo=deno)](https://deno.com)
-[![Ko-fi](https://img.shields.io/badge/support-Ko--fi-ff5e5b?logo=ko-fi&logoColor=white)](https://ko-fi.com/simon256px)
+> Short links, honest analytics, nothing else to run.
 
 A self-hosted URL shortener with a privacy-respecting analytics dashboard, per-link social cards,
 and a Discord message that keeps itself up to date.
@@ -26,7 +23,8 @@ no Postgres.
 **Contents** — [Features](#features) · [Quick start](#quick-start) · [Configuration](#configuration)
 · [Deploying](#deploying-on-fedora) · [Social cards](#social-cards) · [Channels](#channels) ·
 [Discord](#discord) · [API](#api) · [Security & privacy](#security--privacy) ·
-[Development](#development) · [Contributing](#contributing) · [License](#license)
+[Development](#development) · [Contributing](#contributing) · [Support](#support) ·
+[License](#license)
 
 ## Features
 
@@ -301,7 +299,7 @@ accepts `disabled`. On `PATCH`, an absent key is left alone and an explicit `nul
 | Task                | Does                                       |
 | ------------------- | ------------------------------------------ |
 | `deno task dev`     | Run with file watching                     |
-| `deno task test`    | Run the 121 tests (unit, storage, HTTP)    |
+| `deno task test`    | Run the tests (unit, storage, HTTP)        |
 | `deno task check`   | Type check, lint and format check, like CI |
 | `deno task fmt`     | Format the code                            |
 | `deno task compile` | Build a standalone binary into `dist/`     |
@@ -350,7 +348,10 @@ deploy/         systemd unit, Caddyfile, Fedora installer, backup script
 Bug reports, ideas and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Please
 report security issues privately rather than in a public issue.
 
-If the project is useful to you, you can [buy me a coffee on Ko-fi](https://ko-fi.com/simon256px).
+## Support
+
+shorturl-dashboard is free and stays that way. If it saves you a SaaS subscription, you can support
+its development at [ko-fi.com/simon256px](https://ko-fi.com/simon256px).
 
 ## License
 
